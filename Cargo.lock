@@ -7158,7 +7158,7 @@ dependencies = [
  "solana-time-utils",
  "solana-tls-utils",
  "solana-tpu-client",
- "solana-tpu-client-next",
+ "solana-tpu-client-next 4.0.0-alpha.0",
  "solana-transaction",
  "solana-transaction-error",
  "solana-transaction-status",
@@ -8480,7 +8480,7 @@ dependencies = [
  "solana-test-validator",
  "solana-time-utils",
  "solana-tpu-client",
- "solana-tpu-client-next",
+ "solana-tpu-client-next 1.0.0",
  "solana-transaction",
  "spl-memo-interface",
  "thiserror 2.0.17",
@@ -9012,7 +9012,7 @@ dependencies = [
  "solana-runtime",
  "solana-signature",
  "solana-time-utils",
- "solana-tpu-client-next",
+ "solana-tpu-client-next 4.0.0-alpha.0",
  "tokio",
  "tokio-util 0.7.17",
 ]
@@ -9580,6 +9580,44 @@ dependencies = [
 
 [[package]]
 name = "solana-tpu-client-next"
+version = "1.0.0"
+dependencies = [
+ "async-trait",
+ "crossbeam-channel",
+ "futures 0.3.31",
+ "futures-util",
+ "log",
+ "lru",
+ "quinn",
+ "rustls 0.23.35",
+ "serde_json",
+ "solana-cli-config",
+ "solana-clock",
+ "solana-commitment-config",
+ "solana-epoch-schedule",
+ "solana-keypair",
+ "solana-measure",
+ "solana-metrics",
+ "solana-net-utils",
+ "solana-pubkey 3.0.0",
+ "solana-pubsub-client",
+ "solana-quic-definitions",
+ "solana-rpc-client",
+ "solana-rpc-client-api",
+ "solana-signer",
+ "solana-streamer",
+ "solana-time-utils",
+ "solana-tls-utils",
+ "solana-tpu-client-next 1.0.0",
+ "thiserror 2.0.17",
+ "tokio",
+ "tokio-stream",
+ "tokio-util 0.7.17",
+ "tracing",
+]
+
+[[package]]
+name = "solana-tpu-client-next"
 version = "4.0.0-alpha.0"
 source = "git+https://github.com/anza-xyz/agave.git?rev=7d7973#7d79731d4b4dd68b464e8ae3b27dfe980833423a"
 dependencies = [
@@ -9598,7 +9636,6 @@ dependencies = [
  "solana-measure",
  "solana-metrics",
  "solana-pubkey 3.0.0",
- "solana-pubsub-client",
  "solana-quic-definitions",
  "solana-rpc-client",
  "solana-rpc-client-api",
@@ -9608,7 +9645,6 @@ dependencies = [
  "solana-tpu-client",
  "thiserror 2.0.17",
  "tokio",
- "tokio-stream",
  "tokio-util 0.7.17",
 ]
 
@@ -9677,7 +9713,7 @@ dependencies = [
  "solana-streamer",
  "solana-system-interface",
  "solana-time-utils",
- "solana-tpu-client-next",
+ "solana-tpu-client-next 1.0.0",
  "solana-transaction",
  "thiserror 2.0.17",
  "tokio",
@@ -11148,7 +11184,7 @@ dependencies = [
  "solana-signer",
  "solana-system-interface",
  "solana-tpu-client",
- "solana-tpu-client-next",
+ "solana-tpu-client-next 1.0.0",
  "solana-transaction",
  "thiserror 2.0.17",
  "tokio",
@@ -11236,7 +11272,7 @@ dependencies = [
  "log",
  "solana-clock",
  "solana-rpc-client",
- "solana-tpu-client-next",
+ "solana-tpu-client-next 1.0.0",
  "thiserror 2.0.17",
  "tokio",
  "tokio-util 0.7.17",

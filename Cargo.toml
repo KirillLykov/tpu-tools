@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "tpu-client-next",
     "rate-latency-tool",
     "tools-common",
     "tpu-client-next-extensions",
@@ -83,7 +84,7 @@ solana-system-interface = "2.0"
 solana-test-validator = { git = "https://github.com/anza-xyz/agave.git", rev = "7d7973", features = ["agave-unstable-api"] }
 solana-time-utils = "3.0.0"
 solana-tpu-client = { git = "https://github.com/anza-xyz/agave.git", rev = "7d7973", features = ["agave-unstable-api"] }
-solana-tpu-client-next = { git = "https://github.com/anza-xyz/agave.git", rev = "7d7973", features = ["agave-unstable-api"] }
+solana-tpu-client-next = { path = "tpu-client-next" }
 solana-transaction = "3.0.1"
 spl-memo-interface = "2.0.0"
 thiserror = "2.0.17"
@@ -98,6 +99,9 @@ tracing = "0.1"
 # Use updated version of yellowstone-grpc to match Solana version
 yellowstone-grpc-client = { git = "https://github.com/KirillLykov/yellowstone-grpc.git", rev = "3ef0" }
 yellowstone-grpc-proto = { git = "https://github.com/KirillLykov/yellowstone-grpc.git", rev = "3ef0" }
+quinn = "0.11.9"
+rustls = { version = "0.23.35", features = ["std"], default-features = false }
+solana-tls-utils = { git = "https://github.com/anza-xyz/agave.git", rev = "7d7973", features = ["agave-unstable-api"] }
 
 [profile.release-with-debug]
 inherits = "release"
@@ -124,4 +128,3 @@ codegen-units = 1
 # we override the opt-level to 3 for the crate.
 [profile.dev.package.curve25519-dalek]
 opt-level = 3
-

@@ -76,6 +76,7 @@ where
                         stats.clone(),
                     );
                     if let Some(pop_worker) = workers.push(peer, worker) {
+                        debug!("Removing existing worker for the peer {peer}.");
                         shutdown_worker(pop_worker)
                     }
                 } else {
