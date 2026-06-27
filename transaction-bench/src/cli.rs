@@ -249,11 +249,11 @@ pub struct SimpleTransferTxParams {
     #[clap(
         long = "max-lamports-to-transfer",
         alias = "lamports-to-transfer",
-        default_value = "513",
+        default_value_t = DEFAULT_MAX_LAMPORTS_TO_TRANSFER,
         value_parser = value_parser!(u64).range(513..),
         help = "Max lamports to transfer in a transfer instruction. For each transfer instruction \
                 in a generated batch, select a unique random value from the range [1, this value]\n\
-                to provide more entropy for transactions.\n"
+                to provide more entropy for transactions. Defaults to 65536.\n"
     )]
     pub lamports_to_transfer: u64,
 
@@ -284,6 +284,8 @@ pub struct SimpleTransferTxParams {
     )]
     pub num_conflict_groups: Option<NonZeroUsize>,
 }
+
+const DEFAULT_MAX_LAMPORTS_TO_TRANSFER: u64 = 65_536;
 
 fn parse_duration(s: &str) -> Result<Duration, &'static str> {
     s.parse::<u64>()
@@ -482,7 +484,7 @@ mod tests {
 
                 transaction_params: TransactionParams {
                     simple_transfer_tx_params: SimpleTransferTxParams {
-                        lamports_to_transfer: 513,
+                        lamports_to_transfer: DEFAULT_MAX_LAMPORTS_TO_TRANSFER,
                         transfer_tx_cu_budget: 1000,
                         num_send_instructions_per_tx: 2,
                         tx_batch_size: None,
@@ -511,7 +513,7 @@ mod tests {
     fn test_instruction_padding_config_defaults_program_id() {
         let params = TransactionParams {
             simple_transfer_tx_params: SimpleTransferTxParams {
-                lamports_to_transfer: 513,
+                lamports_to_transfer: DEFAULT_MAX_LAMPORTS_TO_TRANSFER,
                 transfer_tx_cu_budget: 600,
                 num_send_instructions_per_tx: 1,
                 tx_batch_size: None,
