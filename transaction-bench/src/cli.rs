@@ -255,7 +255,7 @@ pub struct SimpleTransferTxParams {
                 in a generated batch, select a unique random value from the range [1, this value]\n\
                 to provide more entropy for transactions. Defaults to 65536.\n"
     )]
-    pub lamports_to_transfer: u64,
+    pub max_lamports_to_transfer: u64,
 
     #[clap(long, default_value = "600", help = "Transfer transaction CU budget.")]
     pub transfer_tx_cu_budget: u32,
@@ -429,7 +429,7 @@ mod tests {
             command: Command::Run {
                 transaction_params: TransactionParams {
                     simple_transfer_tx_params: SimpleTransferTxParams {
-                        lamports_to_transfer: 1000,
+                        max_lamports_to_transfer: 1000,
                         transfer_tx_cu_budget: 600,
                         num_send_instructions_per_tx: 1,
                         tx_batch_size: None,
@@ -484,7 +484,7 @@ mod tests {
 
                 transaction_params: TransactionParams {
                     simple_transfer_tx_params: SimpleTransferTxParams {
-                        lamports_to_transfer: DEFAULT_MAX_LAMPORTS_TO_TRANSFER,
+                        max_lamports_to_transfer: DEFAULT_MAX_LAMPORTS_TO_TRANSFER,
                         transfer_tx_cu_budget: 1000,
                         num_send_instructions_per_tx: 2,
                         tx_batch_size: None,
@@ -513,7 +513,7 @@ mod tests {
     fn test_instruction_padding_config_defaults_program_id() {
         let params = TransactionParams {
             simple_transfer_tx_params: SimpleTransferTxParams {
-                lamports_to_transfer: DEFAULT_MAX_LAMPORTS_TO_TRANSFER,
+                max_lamports_to_transfer: DEFAULT_MAX_LAMPORTS_TO_TRANSFER,
                 transfer_tx_cu_budget: 600,
                 num_send_instructions_per_tx: 1,
                 tx_batch_size: None,

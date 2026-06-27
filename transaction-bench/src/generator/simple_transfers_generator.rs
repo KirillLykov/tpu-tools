@@ -5,11 +5,10 @@ use {
         priority_fee::{PriorityFeeMode, PriorityFeeStats},
     },
     log::debug,
-    rand::{seq::IteratorRandom, thread_rng},
     solana_hash::Hash,
     solana_keypair::Keypair,
     solana_measure::measure::Measure,
-    std::{num::NonZeroUsize, sync::Arc},
+    std::{num::NonZeroUsize, ops::Range, sync::Arc},
     tokio::task::JoinHandle,
 };
 
@@ -19,6 +18,7 @@ use {
 pub(crate) fn generate_transfer_transaction_batch(
     payers: Arc<Vec<Keypair>>,
     payer_index: usize,
+    lamports_pool: SharedSlice<u64>,
     blockhash: Hash,
     TransactionParams {
         simple_transfer_tx_params,
@@ -39,20 +39,18 @@ pub(crate) fn generate_transfer_transaction_batch(
         }
         .instruction_padding_config();
 
-        let lamports_to_transfer = simple_transfer_tx_params.lamports_to_transfer;
         let transfer_tx_cu_budget = simple_transfer_tx_params.transfer_tx_cu_budget;
         let num_send_instructions_per_tx = simple_transfer_tx_params.num_send_instructions_per_tx;
         let num_conflict_groups = simple_transfer_tx_params.num_conflict_groups;
 
         let total_pairs = num_send_instructions_per_tx * send_batch_size;
+        let mut lamports = lamports_pool.as_slice().iter();
 
-        let lamports_to_transfer = unique_random_numbers(total_pairs, lamports_to_transfer);
         let (accounts_from, accounts_to) =
             build_accounts_from_to_lists(&payers, payer_index, total_pairs, num_conflict_groups);
 
         let mut accounts_from_iter = accounts_from.iter().copied();
         let mut accounts_to_iter = accounts_to.iter().copied();
-        let mut lamports = lamports_to_transfer.iter();
         let mut instructions = Vec::with_capacity(num_send_instructions_per_tx);
         let mut signers: Vec<&Keypair> = Vec::with_capacity(num_send_instructions_per_tx);
 
@@ -122,18 +120,6 @@ fn build_accounts_from_to_lists<'a>(
     (accounts_from, accounts_to)
 }
 
-fn unique_random_numbers(count: usize, lamports_to_transfer: u64) -> Vec<u64> {
-    assert!(
-        count as u64 <= lamports_to_transfer,
-        "Not enough unique values in range: {count} > {lamports_to_transfer}"
-    );
-
-    let mut rng = thread_rng();
-
-    // Sample `count` unique values from the full range
-    (1..=lamports_to_transfer).choose_multiple(&mut rng, count)
-}
-
 /// Helper to spawn a blocking task for generating a batch of transactions.
 /// Manages performance measurement and logging.
 fn spawn_blocking_transaction_batch_generation<F>(
@@ -155,6 +141,25 @@ where
         );
         txs
     })
+}
+
+#[derive(Clone)]
+pub(crate) struct SharedSlice<T> {
+    data: Arc<[T]>,
+    range: Range<usize>,
+}
+
+impl<T> SharedSlice<T> {
+    pub fn new(data: Arc<[T]>, range: Range<usize>) -> Self {
+        assert!(range.start <= range.end);
+        assert!(range.end <= data.len());
+
+        Self { data, range }
+    }
+
+    pub fn as_slice(&self) -> &[T] {
+        &self.data[self.range.clone()]
+    }
 }
 
 #[cfg(test)]
