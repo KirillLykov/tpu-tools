@@ -247,10 +247,12 @@ impl TransactionParams {
 #[clap(rename_all = "kebab-case")]
 pub struct SimpleTransferTxParams {
     #[clap(
-        long,
+        long = "max-lamports-to-transfer",
+        alias = "lamports-to-transfer",
         default_value = "513",
         value_parser = value_parser!(u64).range(513..),
-        help = "Max lamports to transfer in a transfer transaction, we select a random value in the range [0, this value]\n\
+        help = "Max lamports to transfer in a transfer instruction. For each transfer instruction \
+                in a generated batch, select a unique random value from the range [1, this value]\n\
                 to provide more entropy for transactions.\n"
     )]
     pub lamports_to_transfer: u64,
@@ -409,7 +411,7 @@ mod tests {
             "--authority",
             keypair_file_name,
             "run",
-            "--lamports-to-transfer",
+            "--max-lamports-to-transfer",
             "1000",
             "--transfer-tx-cu-budget",
             "600",
@@ -542,7 +544,7 @@ mod tests {
             "--authority",
             keypair_file_name,
             "run",
-            "--lamports-to-transfer",
+            "--max-lamports-to-transfer",
             "1000",
             "--transfer-tx-cu-budget",
             "600",

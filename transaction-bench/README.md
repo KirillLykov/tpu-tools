@@ -55,9 +55,9 @@ solana-transaction-bench "${create_accounts_args[@]}"
 ```
 
 After `accounts.json` is created, use `read-accounts-run` to start sending transactions. A high
-`--lamports-to-transfer` value gives the generator enough unique transfer amounts to avoid duplicate
-transactions within generated batches. Here we use `ws-leader-tracker` to keep track of leaders
-using websocket.
+`--max-lamports-to-transfer` value gives the generator enough unique transfer amounts from the
+inclusive range `1..=max` to avoid duplicate transactions within generated batches. Here we use
+`ws-leader-tracker` to keep track of leaders using websocket.
 
 ```shell
 run_args=(
@@ -71,7 +71,7 @@ run_args=(
   --workers-pull-size 8
   --send-fanout 1
   --transfer-tx-cu-budget 350
-  --lamports-to-transfer 8096
+  --max-lamports-to-transfer 8096
   --num-send-instructions-per-tx 1
   ws-leader-tracker
 )
