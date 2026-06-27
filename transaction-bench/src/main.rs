@@ -343,7 +343,7 @@ mod tests {
                 },
                 transaction_params: TransactionParams {
                     simple_transfer_tx_params: SimpleTransferTxParams {
-                        lamports_to_transfer: 513,
+                        max_lamports_to_transfer: 513,
                         transfer_tx_cu_budget: 600,
                         num_send_instructions_per_tx: 1,
                         tx_batch_size: None,
