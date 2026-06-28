@@ -6,7 +6,7 @@ use {
         priority_fee::{PriorityFeeMode, PriorityFeeStats},
     },
     log::*,
-    rand::{seq::SliceRandom, thread_rng},
+    rand::{Rng, seq::SliceRandom, thread_rng},
     solana_hash::Hash,
     solana_measure::measure::Measure,
     solana_tpu_client_next::transaction_batch::TransactionBatch,
@@ -109,7 +109,6 @@ impl TransactionGenerator {
             .simple_transfer_tx_params
             .max_lamports_to_transfer as usize;
         let lamports_pool = create_lamports_pool(lamports_pool_size);
-        let mut lamports_index: usize = 0;
 
         let num_senders = self.transactions_senders.len();
         let mut sender_index: usize = 0;
@@ -155,14 +154,13 @@ impl TransactionGenerator {
                             .simple_transfer_tx_params
                             .num_conflict_groups;
                         let lamports_pool = lamports_pool.clone();
+                        let lamports_start = choose_lamports_start(lamports_pool_size, total_pairs);
+                        let lamports_end = lamports_start + total_pairs;
                         futures.spawn(async move {
                             let Ok(wired_tx_batch) = generate_transfer_transaction_batch(
                                 payers,
                                 index_payer,
-                                SharedSlice::new(
-                                    lamports_pool,
-                                    lamports_index..lamports_index + total_pairs,
-                                ),
+                                SharedSlice::new(lamports_pool, lamports_start..lamports_end),
                                 blockhash,
                                 transaction_params,
                                 compute_unit_price,
@@ -185,16 +183,6 @@ impl TransactionGenerator {
                         // accounts_from consumes `total_pairs`, accounts_to consumes `receivers_consumed`
                         index_payer = index_payer.saturating_add(total_pairs + receivers_consumed)
                             % len_payers;
-
-                        // ensure that the segment [lamports_index, lamports_index + total_pairs) is
-                        // within the bounds of the lamports pool
-                        lamports_index = if lamports_index.saturating_add(2 * total_pairs)
-                            > lamports_pool_size
-                        {
-                            0
-                        } else {
-                            lamports_index.saturating_add(total_pairs)
-                        };
                     }
                 }
 
