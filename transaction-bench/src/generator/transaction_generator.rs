@@ -2,10 +2,11 @@
 use {
     crate::{
         cli::{SimpleTransferTxParams, TransactionParams},
-        generator::simple_transfers_generator::generate_transfer_transaction_batch,
+        generator::simple_transfers_generator::{SharedSlice, generate_transfer_transaction_batch},
         priority_fee::{PriorityFeeMode, PriorityFeeStats},
     },
     log::*,
+    rand::{seq::SliceRandom, thread_rng},
     solana_hash::Hash,
     solana_measure::measure::Measure,
     solana_tpu_client_next::transaction_batch::TransactionBatch,
@@ -103,6 +104,13 @@ impl TransactionGenerator {
             return Err(TransactionGeneratorError::GenerateTxBatchFailure);
         }
 
+        let lamports_pool_size = self
+            .transaction_params
+            .simple_transfer_tx_params
+            .max_lamports_to_transfer as usize;
+        let mut lamports_pool = create_lamports_pool(lamports_pool_size);
+        let mut lamports_index: usize = 0;
+
         let num_senders = self.transactions_senders.len();
         let mut sender_index: usize = 0;
         let start = Instant::now();
@@ -142,13 +150,20 @@ impl TransactionGenerator {
                         let num_send_instructions_per_tx = transaction_params
                             .simple_transfer_tx_params
                             .num_send_instructions_per_tx;
+                        let total_pairs = num_send_instructions_per_tx * send_batch_size;
                         let num_conflict_groups = transaction_params
                             .simple_transfer_tx_params
                             .num_conflict_groups;
+                        let lamports = next_lamports_slice(
+                            &mut lamports_pool,
+                            &mut lamports_index,
+                            total_pairs,
+                        );
                         futures.spawn(async move {
                             let Ok(wired_tx_batch) = generate_transfer_transaction_batch(
                                 payers,
                                 index_payer,
+                                lamports,
                                 blockhash,
                                 transaction_params,
                                 compute_unit_price,
@@ -164,7 +179,6 @@ impl TransactionGenerator {
 
                             send_batch(wired_tx_batch, transactions_sender).await;
                         });
-                        let total_pairs = num_send_instructions_per_tx * send_batch_size;
 
                         let receivers_consumed =
                             num_conflict_groups.map(|g| g.get()).unwrap_or(total_pairs);
@@ -252,12 +266,40 @@ fn compute_batch_interval(send_batch_size: usize, target_tps: NonZeroU64) -> Dur
     Duration::from_nanos(u64::try_from(batch_interval_nanos).unwrap_or(u64::MAX))
 }
 
+fn create_lamports_pool(max_lamports_to_transfer: usize) -> Arc<[u64]> {
+    let mut lamports: Vec<u64> = (1..=max_lamports_to_transfer as u64).collect();
+    let mut rng = thread_rng();
+
+    lamports.shuffle(&mut rng);
+    lamports.into()
+}
+
+fn next_lamports_slice(
+    lamports_pool: &mut Arc<[u64]>,
+    lamports_index: &mut usize,
+    total_pairs: usize,
+) -> SharedSlice<u64> {
+    assert!(total_pairs <= lamports_pool.len());
+
+    if lamports_pool.len().saturating_sub(*lamports_index) < total_pairs {
+        *lamports_pool = create_lamports_pool(lamports_pool.len());
+        *lamports_index = 0;
+    }
+
+    let lamports_end = lamports_index
+        .checked_add(total_pairs)
+        .expect("lamports slice end must fit usize");
+    let lamports = SharedSlice::new(lamports_pool.clone(), *lamports_index..lamports_end);
+    *lamports_index = lamports_end;
+    lamports
+}
+
 #[cfg(test)]
 mod tests {
     use {
-        super::{compute_batch_interval, compute_transfer_tx_min_cu_budget},
+        super::{compute_batch_interval, compute_transfer_tx_min_cu_budget, next_lamports_slice},
         crate::cli::{InstructionPaddingParams, SimpleTransferTxParams, TransactionParams},
-        std::num::NonZeroU64,
+        std::{num::NonZeroU64, sync::Arc},
         tokio::time::Duration,
     };
 
@@ -303,6 +345,32 @@ mod tests {
         assert_eq!(actual, 2 * 3_000);
     }
 
+    #[test]
+    fn test_next_lamports_slice_advances_without_reshuffle() {
+        let mut pool: Arc<[u64]> = Arc::from([1, 2, 3, 4]);
+        let mut index = 0;
+
+        let first = next_lamports_slice(&mut pool, &mut index, 2);
+        let second = next_lamports_slice(&mut pool, &mut index, 2);
+
+        assert_eq!(first.as_slice(), &[1, 2]);
+        assert_eq!(second.as_slice(), &[3, 4]);
+        assert_eq!(index, 4);
+    }
+
+    #[test]
+    fn test_next_lamports_slice_reshuffles_when_tail_is_too_short() {
+        let mut pool: Arc<[u64]> = Arc::from([1, 2, 3, 4]);
+        let mut index = 0;
+
+        let old_slice = next_lamports_slice(&mut pool, &mut index, 3);
+        let new_slice = next_lamports_slice(&mut pool, &mut index, 3);
+
+        assert_eq!(old_slice.as_slice(), &[1, 2, 3]);
+        assert_eq!(new_slice.as_slice().len(), 3);
+        assert_eq!(index, 3);
+    }
+
     fn make_transaction_params(
         num_send_instructions_per_tx: usize,
         instruction_padding_data_size: Option<u32>,
@@ -310,7 +378,7 @@ mod tests {
     ) -> TransactionParams {
         TransactionParams {
             simple_transfer_tx_params: SimpleTransferTxParams {
-                lamports_to_transfer: 513,
+                max_lamports_to_transfer: 513,
                 transfer_tx_cu_budget: 600,
                 num_send_instructions_per_tx,
                 tx_batch_size: None,

@@ -179,6 +179,31 @@ pub async fn run_client(
         info!("Using {workers_pull_size} generator workers for target {target_tps} tx/s.");
     }
 
+    {
+        let transfer_instructions_per_batch = transaction_params
+            .simple_transfer_tx_params
+            .num_send_instructions_per_tx
+            .saturating_mul(send_batch_size);
+        if transfer_instructions_per_batch
+            > transaction_params
+                .simple_transfer_tx_params
+                .max_lamports_to_transfer as usize
+        {
+            return Err(BenchClientError::InvalidCliArguments(format!(
+                "--max-lamports-to-transfer ({}) must be >= transfer instructions per generated \
+                 batch ({}) ; computed as num-send-instructions-per-tx ({}) * tx-batch-size ({})",
+                transaction_params
+                    .simple_transfer_tx_params
+                    .max_lamports_to_transfer,
+                transfer_instructions_per_batch,
+                transaction_params
+                    .simple_transfer_tx_params
+                    .num_send_instructions_per_tx,
+                send_batch_size
+            )));
+        }
+    }
+
     if let Some(num_conflict_groups) = transaction_params
         .simple_transfer_tx_params
         .num_conflict_groups
