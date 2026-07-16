@@ -5,9 +5,8 @@ use {
     async_trait::async_trait,
     log::{debug, warn},
     solana_tpu_client_next::{
-        ConnectionWorkersSchedulerError,
+        ConnectionWorkersSchedulerError, WiredTransaction,
         connection_workers_scheduler::WorkersBroadcaster,
-        transaction_batch::TransactionBatch,
         workers_cache::{WorkersCache, WorkersCacheError},
     },
     std::net::SocketAddr,
@@ -33,7 +32,7 @@ impl WorkersBroadcaster for BackpressuredBroadcaster {
         &self,
         workers: &mut WorkersCache,
         leaders: &[SocketAddr],
-        transaction_batch: TransactionBatch,
+        transaction: WiredTransaction,
     ) -> Result<(), ConnectionWorkersSchedulerError> {
         // this part is taken from NonblockingBroadcaster with modification of
         // counting successful try_send.
@@ -44,15 +43,14 @@ impl WorkersBroadcaster for BackpressuredBroadcaster {
                 continue;
             }
 
-            let send_res =
-                workers.try_send_transactions_to_address(new_leader, transaction_batch.clone());
+            let send_res = workers.try_send_transaction_to_address(new_leader, transaction.clone());
             match send_res {
                 Ok(()) => num_delivered = num_delivered.saturating_add(1),
                 Err(WorkersCacheError::ShutdownError) => {
                     debug!("Connection to {new_leader} was closed, worker cache shutdown");
                 }
                 Err(WorkersCacheError::ReceiverDropped) => {
-                    // do nothing here, we shutdown the worker in try_send_transactions_to_address
+                    // do nothing here, we shutdown the worker in try_send_transaction_to_address
                 }
                 Err(err) => {
                     debug!("Failed to send batch to {new_leader}, worker error: {err}");
@@ -76,7 +74,7 @@ impl WorkersBroadcaster for BackpressuredBroadcaster {
             }
 
             let send_res = workers
-                .send_transactions_to_address(new_leader, transaction_batch.clone())
+                .send_transactions_to_address(new_leader, transaction.clone())
                 .await;
             match send_res {
                 Ok(()) => {

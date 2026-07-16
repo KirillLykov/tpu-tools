@@ -27,7 +27,12 @@ use {
         accounts_file::AccountsFile, blockhash_updater::BlockhashUpdater,
         leader_updater::create_leader_updater,
     },
-    std::{fmt::Debug, num::NonZeroU64, sync::Arc, time::Duration},
+    std::{
+        fmt::Debug,
+        num::{NonZeroU64, NonZeroUsize},
+        sync::Arc,
+        time::Duration,
+    },
     tokio::{
         sync::{mpsc, oneshot, watch},
         task::JoinHandle,
@@ -303,14 +308,14 @@ pub async fn run_client(
         let scheduler_config = ConnectionWorkersSchedulerConfig {
             bind: BindTarget::Address(bind),
             stake_identity,
-            num_connections: num_max_open_connections,
+            num_connections: NonZeroUsize::new(num_max_open_connections)
+                .expect("--num-max-open-connections must be greater than 0"),
             worker_channel_size: WORKER_CHANNEL_SIZE,
             max_reconnect_attempts: MAX_RECONNECT_ATTEMPTS,
             leaders_fanout: Fanout {
                 send: send_fanout,
                 connect: send_fanout.saturating_add(1),
             },
-            skip_check_transaction_age: false,
             override_initial_congestion_window: None,
         };
 

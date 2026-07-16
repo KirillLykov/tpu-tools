@@ -9,7 +9,7 @@ use {
     rand::{seq::SliceRandom, thread_rng},
     solana_hash::Hash,
     solana_measure::measure::Measure,
-    solana_tpu_client_next::transaction_batch::TransactionBatch,
+    solana_tpu_client_next::WiredTransaction,
     solana_tpu_tools_common::accounts_file::AccountsFile,
     std::{num::NonZeroU64, sync::Arc},
     thiserror::Error,
@@ -36,7 +36,7 @@ pub enum TransactionGeneratorError {
 pub struct TransactionGenerator {
     accounts: AccountsFile,
     blockhash_receiver: watch::Receiver<Hash>,
-    transactions_senders: Vec<Sender<TransactionBatch>>,
+    transactions_senders: Vec<Sender<WiredTransaction>>,
     transaction_params: TransactionParams,
     compute_unit_price: Option<u64>,
     priority_fee_mode: PriorityFeeMode,
@@ -52,7 +52,7 @@ impl TransactionGenerator {
     pub fn new(
         accounts: AccountsFile,
         blockhash_receiver: watch::Receiver<Hash>,
-        transactions_senders: Vec<Sender<TransactionBatch>>,
+        transactions_senders: Vec<Sender<WiredTransaction>>,
         transaction_params: TransactionParams,
         compute_unit_price: Option<u64>,
         priority_fee_mode: PriorityFeeMode,
@@ -242,14 +242,16 @@ pub(crate) enum TransactionType {
     //TODO(klykov): add memo
 }
 
-async fn send_batch(wired_txs_batch: Vec<Vec<u8>>, transactions_sender: Sender<TransactionBatch>) {
+async fn send_batch(
+    wired_txs_batch: Vec<WiredTransaction>,
+    transactions_sender: Sender<WiredTransaction>,
+) {
     let mut measure_send_to_queue = Measure::start("add transaction batch to channel");
-    if let Err(err) = transactions_sender
-        .send(TransactionBatch::new(wired_txs_batch))
-        .await
-    {
-        error!("Receiver dropped, error {err}.");
-        return;
+    for wired_tx in wired_txs_batch {
+        if let Err(err) = transactions_sender.send(wired_tx).await {
+            error!("Receiver dropped, error {err}.");
+            return;
+        }
     }
     measure_send_to_queue.stop();
     debug!(
