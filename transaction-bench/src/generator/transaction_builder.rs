@@ -14,7 +14,7 @@ use {
     solana_pubkey::Pubkey,
     solana_signer::Signer,
     solana_system_interface::instruction as system_instruction,
-    solana_tpu_client_next::WiredTransaction,
+    solana_tpu_client_next::WireTransaction,
     solana_transaction::{Transaction, versioned::VersionedTransaction},
     spl_instruction_padding_interface::instruction::wrap_instruction,
     std::sync::Arc,
@@ -27,7 +27,7 @@ pub(crate) fn create_serialized_signed_transaction(
     mut instructions: Vec<Instruction>,
     additional_signers: Vec<&Keypair>,
     transaction_cu_budget: u32,
-) -> WiredTransaction {
+) -> WireTransaction {
     let set_cu_instruction =
         ComputeBudgetInstruction::set_compute_unit_limit(transaction_cu_budget);
 
@@ -65,7 +65,7 @@ pub(crate) fn create_serialized_transfers<'a, S, R, L>(
     priority_fee_mode: &PriorityFeeMode,
     priority_fee_stats: &Arc<PriorityFeeStats>,
     use_txv1: bool,
-) -> WiredTransaction
+) -> WireTransaction
 where
     S: Iterator<Item = &'a Keypair>,
     R: Iterator<Item = &'a Keypair>,

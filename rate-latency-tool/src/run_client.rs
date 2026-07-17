@@ -16,7 +16,7 @@ use {
     solana_signer::{EncodableKey, Signer},
     solana_time_utils::timestamp,
     solana_tpu_client_next::{
-        SendTransactionStats, WiredTransaction,
+        SendTransactionStats, WireTransaction,
         connection_workers_scheduler::{
             BindTarget, ConnectionWorkersSchedulerConfig, Fanout, StakeIdentity,
         },
@@ -277,7 +277,7 @@ fn create_memo_transaction(
     compute_unit_price: Option<u64>,
     payer: &Keypair,
     blockhash: Hash,
-) -> (Signature, WiredTransaction) {
+) -> (Signature, WireTransaction) {
     let memo = format!("{tx_id},{current_slot},{timestamp}");
     let mut instructions: Vec<solana_message::Instruction> = vec![];
     instructions.push(ComputeBudgetInstruction::set_compute_unit_limit(MEMO_TX_CU));

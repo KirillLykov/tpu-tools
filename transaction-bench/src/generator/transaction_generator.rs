@@ -9,7 +9,7 @@ use {
     rand::{seq::SliceRandom, thread_rng},
     solana_hash::Hash,
     solana_measure::measure::Measure,
-    solana_tpu_client_next::WiredTransaction,
+    solana_tpu_client_next::WireTransaction,
     solana_tpu_tools_common::accounts_file::AccountsFile,
     std::{num::NonZeroU64, sync::Arc},
     thiserror::Error,
@@ -36,7 +36,7 @@ pub enum TransactionGeneratorError {
 pub struct TransactionGenerator {
     accounts: AccountsFile,
     blockhash_receiver: watch::Receiver<Hash>,
-    transactions_senders: Vec<Sender<WiredTransaction>>,
+    transactions_senders: Vec<Sender<WireTransaction>>,
     transaction_params: TransactionParams,
     compute_unit_price: Option<u64>,
     priority_fee_mode: PriorityFeeMode,
@@ -52,7 +52,7 @@ impl TransactionGenerator {
     pub fn new(
         accounts: AccountsFile,
         blockhash_receiver: watch::Receiver<Hash>,
-        transactions_senders: Vec<Sender<WiredTransaction>>,
+        transactions_senders: Vec<Sender<WireTransaction>>,
         transaction_params: TransactionParams,
         compute_unit_price: Option<u64>,
         priority_fee_mode: PriorityFeeMode,
@@ -243,8 +243,8 @@ pub(crate) enum TransactionType {
 }
 
 async fn send_batch(
-    wired_txs_batch: Vec<WiredTransaction>,
-    transactions_sender: Sender<WiredTransaction>,
+    wired_txs_batch: Vec<WireTransaction>,
+    transactions_sender: Sender<WireTransaction>,
 ) {
     let mut measure_send_to_queue = Measure::start("add transaction batch to channel");
     for wired_tx in wired_txs_batch {

@@ -40,11 +40,11 @@ use {
     tokio_util::sync::CancellationToken,
 };
 
-const GENERATOR_CHANNEL_SIZE: usize = 32;
+const GENERATOR_CHANNEL_SIZE: usize = 512;
 
 /// Empirically chosen size of the connection worker channel. Lower/higher values gives
 /// significantly smaller txs blocks on testnet.
-const WORKER_CHANNEL_SIZE: usize = 20;
+const WORKER_CHANNEL_SIZE: usize = 256;
 /// Number of reconnection attempts, a reasonable value that have been chosen,
 /// doesn't affect TPS.
 const MAX_RECONNECT_ATTEMPTS: usize = 5;

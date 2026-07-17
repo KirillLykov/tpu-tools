@@ -4,7 +4,7 @@ use {
     solana_clock::Slot,
     solana_measure::measure::Measure,
     solana_tpu_client_next::{
-        ConnectionWorkersSchedulerError, SendTransactionStats, WiredTransaction,
+        ConnectionWorkersSchedulerError, SendTransactionStats, WireTransaction,
         connection_workers_scheduler::{ConnectionWorkersSchedulerConfig, setup_endpoint},
         workers_cache::{WorkersCache, WorkersCacheError, shutdown_worker},
     },
@@ -33,7 +33,7 @@ pub async fn run_rate_latency_tool_scheduler<F, S>(
     mut send_record: S,
 ) -> Result<Arc<SendTransactionStats>, ConnectionWorkersSchedulerError>
 where
-    F: FnMut(Slot) -> (usize, WiredTransaction, CSVRecord),
+    F: FnMut(Slot) -> (usize, WireTransaction, CSVRecord),
     S: FnMut(CSVRecord),
 {
     assert!(
