@@ -149,6 +149,5 @@ where
     workers.shutdown().await;
 
     endpoint.close(0u32.into(), b"Closing connection");
-    leader_updater.stop().await;
     Ok(stats)
 }

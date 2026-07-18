@@ -32,7 +32,7 @@ use {
     std::{
         net::{IpAddr, Ipv4Addr, SocketAddr},
         sync::Arc,
-        time::{Duration, Instant},
+        time::{Duration, Instant, SystemTime, UNIX_EPOCH},
     },
     tokio::runtime::Builder,
     tokio_util::sync::CancellationToken,
@@ -46,11 +46,13 @@ fn test_transactions_sending() {
     let mint_pubkey = mint_keypair.pubkey();
 
     let faucet_addr = run_local_faucet_with_unique_port_for_tests(mint_keypair);
+    let ledger_path = temporary_ledger_path("rate-latency-tool-run-client");
 
     let test_validator = TestValidatorGenesis::default()
+        .ledger_path(ledger_path.clone())
         .pubsub_config(PubSubConfig {
             enable_block_subscription: true,
-            ..PubSubConfig::default()
+            ..PubSubConfig::default_for_tests()
         })
         .rpc_config(JsonRpcConfig {
             enable_rpc_transaction_history: true,
@@ -59,8 +61,7 @@ fn test_transactions_sending() {
         })
         .fee_rate_governor(FeeRateGovernor::new(0, 0))
         .rent(Rent {
-            lamports_per_byte_year: 1,
-            exemption_threshold: 1.0,
+            lamports_per_byte: 1,
             ..Rent::default()
         })
         .faucet_addr(Some(faucet_addr))
@@ -170,6 +171,20 @@ fn test_transactions_sending() {
     // won't return, and the `block_subscribe_client` won't shut down
     drop(test_validator);
     block_subscribe_client.shutdown().unwrap();
+    let _ = std::fs::remove_dir_all(ledger_path);
+}
+
+fn temporary_ledger_path(test_name: &str) -> std::path::PathBuf {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time should be after UNIX epoch")
+        .as_nanos();
+    std::env::temp_dir().join(format!(
+        "{}-{}-{}",
+        test_name,
+        std::process::id(),
+        timestamp
+    ))
 }
 
 async fn get_latest_blockhash(client: &RpcClient) -> Hash {

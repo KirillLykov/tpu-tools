@@ -286,6 +286,14 @@ pub async fn run_client(
         refresh_nodes_info_every: Duration::from_secs(30),
         max_consecutive_failures: 5,
     };
+    let leader_updater_factory = create_leader_updater(
+        rpc_client.clone(),
+        leader_tracker,
+        config,
+        websocket_url,
+        cancel.clone(),
+    )
+    .await?;
 
     if num_tpu_clients > 1 {
         info!("Spawning {num_tpu_clients} tpu-client-next instances.");
@@ -295,14 +303,7 @@ pub async fn run_client(
         Vec::with_capacity(num_tpu_clients);
     let mut all_stats: Vec<Arc<SendTransactionStats>> = Vec::with_capacity(num_tpu_clients);
     for (i, transaction_receiver) in transaction_receivers.into_iter().enumerate() {
-        let leader_updater = create_leader_updater(
-            rpc_client.clone(),
-            leader_tracker.clone(),
-            config.clone(),
-            websocket_url.clone(),
-            cancel.clone(),
-        )
-        .await?;
+        let leader_updater = leader_updater_factory.create_updater().await?;
 
         let stake_identity = validator_identities.get(i).map(StakeIdentity::new);
         let scheduler_config = ConnectionWorkersSchedulerConfig {
@@ -350,12 +351,27 @@ pub async fn run_client(
         debug!("Stats receiver has been dropped.");
     }
 
-    join_service(transaction_generator_task_handle, "TransactionGenerator").await?;
-    join_service(blockhash_task_handle, "BlockhashUpdater").await?;
+    let mut result = join_service(transaction_generator_task_handle, "TransactionGenerator").await;
+    if result.is_err() {
+        cancel.cancel();
+    }
+
+    let blockhash_result = join_service(blockhash_task_handle, "BlockhashUpdater").await;
+    if result.is_ok() {
+        result = blockhash_result;
+    }
+
     for (i, handle) in scheduler_handles.into_iter().enumerate() {
         let name = format!("Scheduler-{i}");
-        join_service(handle, &name).await?;
+        let scheduler_result = join_service(handle, &name).await;
+        if result.is_ok() {
+            result = scheduler_result;
+        }
     }
+
+    let shutdown_result = leader_updater_factory.shutdown().await;
+    result?;
+    shutdown_result?;
     Ok(())
 }
 
