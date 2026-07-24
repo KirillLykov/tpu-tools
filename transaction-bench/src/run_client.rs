@@ -1,7 +1,7 @@
 use {
     crate::{
         backpressured_broadcaster::BackpressuredBroadcaster,
-        cli::{ExecutionParams, TransactionParams},
+        cli::{EndpointConfig, ExecutionParams, TransactionParams},
         error::BenchClientError,
         generator::TransactionGenerator,
         priority_fee::{PriorityFeeMode, PriorityFeeStats},
@@ -22,6 +22,7 @@ use {
             BindTarget, ConnectionWorkersSchedulerConfig, Fanout, StakeIdentity,
         },
         node_address_service::LeaderTpuCacheServiceConfig,
+        transaction_batch::TransactionBatch,
     },
     solana_tpu_tools_common::{
         accounts_file::AccountsFile, blockhash_updater::BlockhashUpdater,
@@ -131,51 +132,61 @@ pub async fn run_client(
     websocket_url: String,
     accounts: AccountsFile,
     transaction_params: TransactionParams,
-    ExecutionParams {
-        staked_identity_files,
-        bind,
-        duration,
-        target_tps,
-        num_max_open_connections,
-        workers_pull_size,
-        send_fanout,
-        compute_unit_price,
-        priority_fee_params,
-        leader_tracker,
-    }: ExecutionParams,
+    execution_params: ExecutionParams,
     stats_sender: Option<RunClientStatsSender>,
     cancel: CancellationToken,
 ) -> Result<(), BenchClientError> {
-    let validator_identities: Vec<Keypair> = staked_identity_files
-        .into_iter()
-        .map(|path| {
-            Keypair::read_from_file(&path).map_err(|_err| BenchClientError::KeypairReadFailure)
-        })
-        .collect::<Result<_, _>>()?;
-    let num_tpu_clients = validator_identities.len().max(1);
+    let endpoint_configs = execution_params
+        .resolved_endpoint_configs()
+        .map_err(BenchClientError::InvalidCliArguments)?;
+    let endpoint_identities = endpoint_configs
+        .iter()
+        .map(load_identity)
+        .collect::<Result<Vec<_>, _>>()?;
 
-    // Set up size of the txs batch to put into the queue to be equal to the num_streams_per_connection
-    let num_streams_per_connection = compute_num_streams(
-        &rpc_client,
-        validator_identities.first().map(|keypair| keypair.pubkey()),
-    )
-    .await
-    .unwrap_or(DEFAULT_NUM_STREAMS_PER_CONNECTION);
+    // Set up size of the txs batch to put into the queue to be equal to the minimum
+    // stream count across configured endpoints.
+    let mut num_streams_per_connection = usize::MAX;
+    for (endpoint_config, validator_identity) in
+        endpoint_configs.iter().zip(endpoint_identities.iter())
+    {
+        let endpoint_num_streams = compute_num_streams(
+            &rpc_client,
+            validator_identity.as_ref().map(|keypair| keypair.pubkey()),
+        )
+        .await
+        .unwrap_or(DEFAULT_NUM_STREAMS_PER_CONNECTION);
+        info!(
+            "Endpoint {} will use {endpoint_num_streams} streams per connection.",
+            endpoint_config.bind
+        );
+        num_streams_per_connection = num_streams_per_connection.min(endpoint_num_streams);
+    }
+    if num_streams_per_connection == usize::MAX {
+        num_streams_per_connection = DEFAULT_NUM_STREAMS_PER_CONNECTION;
+    }
+
     let tx_batch_size = transaction_params
         .simple_transfer_tx_params
         .tx_batch_size
         .map(|n| n.get());
-    let send_batch_size =
-        compute_send_batch_size(tx_batch_size, num_streams_per_connection, target_tps);
-    let workers_pull_size =
-        compute_workers_pull_size(workers_pull_size, send_batch_size, target_tps);
+    let send_batch_size = compute_send_batch_size(
+        tx_batch_size,
+        num_streams_per_connection,
+        execution_params.target_tps,
+    );
+    let workers_pull_size = compute_workers_pull_size(
+        execution_params.workers_pull_size,
+        send_batch_size,
+        execution_params.target_tps,
+    );
     info!("Number of streams per connection is {num_streams_per_connection}.");
     if let Some(tx_batch_size) = tx_batch_size {
         info!("Using tx batch size override: {tx_batch_size}.");
-    } else if let Some(target_tps) = target_tps {
+    } else if let Some(target_tps) = execution_params.target_tps {
         info!("Using rate-limited tx batch size {send_batch_size} for target {target_tps} tx/s.");
     }
-    if let Some(target_tps) = target_tps {
+    if let Some(target_tps) = execution_params.target_tps {
         info!("Using {workers_pull_size} generator workers for target {target_tps} tx/s.");
     }
 
@@ -248,92 +259,52 @@ pub async fn run_client(
 
     let blockhash_task_handle = tokio::spawn(async move { blockhash_updater.run().await });
 
-    // Create N channels, one per tpu-client-next instance.
-    let mut transaction_senders = Vec::with_capacity(num_tpu_clients);
-    let mut transaction_receivers = Vec::with_capacity(num_tpu_clients);
-    for _ in 0..num_tpu_clients {
+    let priority_fee_mode = PriorityFeeMode::try_from(&execution_params.priority_fee_params)
+        .map_err(BenchClientError::InvalidCliArguments)?;
+    let priority_fee_stats = Arc::new(PriorityFeeStats::default());
+
+    let num_endpoints = endpoint_configs.len();
+    let mut transaction_senders = Vec::with_capacity(num_endpoints);
+    let mut transaction_receivers = Vec::with_capacity(num_endpoints);
+    for _ in 0..num_endpoints {
         let (sender, receiver) = mpsc::channel(GENERATOR_CHANNEL_SIZE);
         transaction_senders.push(sender);
         transaction_receivers.push(receiver);
     }
 
-    let priority_fee_mode = PriorityFeeMode::try_from(&priority_fee_params)
-        .map_err(BenchClientError::InvalidCliArguments)?;
-    let priority_fee_stats = Arc::new(PriorityFeeStats::default());
     let transaction_generator = TransactionGenerator::new(
         accounts,
         blockhash_receiver,
         transaction_senders,
         transaction_params,
-        compute_unit_price,
+        execution_params.compute_unit_price,
         priority_fee_mode,
         priority_fee_stats.clone(),
         send_batch_size,
-        duration,
-        target_tps,
+        execution_params.duration,
+        execution_params.target_tps,
         workers_pull_size,
     );
 
-    let transaction_generator_task_handle =
-        tokio::spawn(async move { transaction_generator.run().await });
-    let config = LeaderTpuCacheServiceConfig {
+    let leader_updater_config = LeaderTpuCacheServiceConfig {
         lookahead_leaders: 4,
         refresh_nodes_info_every: Duration::from_secs(30),
         max_consecutive_failures: 5,
     };
+    let (scheduler_handles, all_stats) = build_schedulers(
+        rpc_client.clone(),
+        websocket_url,
+        &execution_params,
+        endpoint_configs,
+        endpoint_identities,
+        transaction_receivers,
+        leader_updater_config,
+        cancel.clone(),
+    )
+    .await?;
 
-    if num_tpu_clients > 1 {
-        info!("Spawning {num_tpu_clients} tpu-client-next instances.");
-    }
-
-    let mut scheduler_handles: Vec<JoinHandle<Result<(), BenchClientError>>> =
-        Vec::with_capacity(num_tpu_clients);
-    let mut all_stats: Vec<Arc<SendTransactionStats>> = Vec::with_capacity(num_tpu_clients);
-    for (i, transaction_receiver) in transaction_receivers.into_iter().enumerate() {
-        let leader_updater = create_leader_updater(
-            rpc_client.clone(),
-            leader_tracker.clone(),
-            config.clone(),
-            websocket_url.clone(),
-            cancel.clone(),
-        )
-        .await?;
-
-        let stake_identity = validator_identities.get(i).map(StakeIdentity::new);
-        let scheduler_config = ConnectionWorkersSchedulerConfig {
-            bind: BindTarget::Address(bind),
-            stake_identity,
-            num_connections: num_max_open_connections,
-            worker_channel_size: WORKER_CHANNEL_SIZE,
-            max_reconnect_attempts: MAX_RECONNECT_ATTEMPTS,
-            leaders_fanout: Fanout {
-                send: send_fanout,
-                connect: send_fanout.saturating_add(1),
-            },
-            skip_check_transaction_age: false,
-            override_initial_congestion_window: None,
-        };
-
-        let (_, update_identity_receiver) = watch::channel(None);
-        let cancel_clone = cancel.clone();
-        let scheduler = ConnectionWorkersScheduler::new(
-            leader_updater,
-            transaction_receiver,
-            update_identity_receiver,
-            cancel_clone,
-        );
-        all_stats.push(scheduler.get_stats());
-
-        let scheduler_handle: JoinHandle<Result<(), BenchClientError>> = tokio::spawn(async move {
-            let broadcaster = Box::new(BackpressuredBroadcaster {});
-            scheduler
-                .run_with_broadcaster(scheduler_config, broadcaster)
-                .await?;
-            Ok(())
-        });
-        scheduler_handles.push(scheduler_handle);
-    }
-
+    let transaction_generator_task_handle =
+        tokio::spawn(async move { transaction_generator.run().await });
     if let Some(stats_sender) = stats_sender
         && stats_sender
             .send(RunClientStats {
@@ -352,6 +323,87 @@ pub async fn run_client(
         join_service(handle, &name).await?;
     }
     Ok(())
+}
+
+fn load_identity(endpoint_config: &EndpointConfig) -> Result<Option<Keypair>, BenchClientError> {
+    endpoint_config
+        .staked_identity_file
+        .as_ref()
+        .map(|staked_identity_file| {
+            Keypair::read_from_file(staked_identity_file)
+                .map_err(|_err| BenchClientError::KeypairReadFailure)
+        })
+        .transpose()
+}
+
+async fn build_schedulers(
+    rpc_client: Arc<RpcClient>,
+    websocket_url: String,
+    execution_params: &ExecutionParams,
+    endpoint_configs: Vec<EndpointConfig>,
+    endpoint_identities: Vec<Option<Keypair>>,
+    transaction_receivers: Vec<mpsc::Receiver<TransactionBatch>>,
+    leader_updater_config: LeaderTpuCacheServiceConfig,
+    cancel: CancellationToken,
+) -> Result<
+    (
+        Vec<JoinHandle<Result<(), BenchClientError>>>,
+        Vec<Arc<SendTransactionStats>>,
+    ),
+    BenchClientError,
+> {
+    let mut scheduler_handles = Vec::with_capacity(endpoint_configs.len());
+    let mut all_stats = Vec::with_capacity(endpoint_configs.len());
+
+    for ((endpoint_config, validator_identity), transaction_receiver) in endpoint_configs
+        .into_iter()
+        .zip(endpoint_identities)
+        .zip(transaction_receivers)
+    {
+        let leader_updater = create_leader_updater(
+            rpc_client.clone(),
+            execution_params.leader_tracker.clone(),
+            leader_updater_config.clone(),
+            websocket_url.clone(),
+            cancel.child_token(),
+        )
+        .await?;
+
+        let stake_identity = validator_identity.as_ref().map(StakeIdentity::new);
+        let scheduler_config = ConnectionWorkersSchedulerConfig {
+            bind: BindTarget::Address(endpoint_config.bind),
+            stake_identity,
+            num_connections: execution_params.num_max_open_connections,
+            worker_channel_size: WORKER_CHANNEL_SIZE,
+            max_reconnect_attempts: MAX_RECONNECT_ATTEMPTS,
+            leaders_fanout: Fanout {
+                send: execution_params.send_fanout,
+                connect: execution_params.send_fanout.saturating_add(1),
+            },
+            skip_check_transaction_age: false,
+            override_initial_congestion_window: None,
+        };
+
+        let (_, update_identity_receiver) = watch::channel(None);
+        let scheduler = ConnectionWorkersScheduler::new(
+            leader_updater,
+            transaction_receiver,
+            update_identity_receiver,
+            cancel.clone(),
+        );
+        all_stats.push(scheduler.get_stats());
+
+        let scheduler_handle = tokio::spawn(async move {
+            let broadcaster = Box::new(BackpressuredBroadcaster {});
+            scheduler
+                .run_with_broadcaster(scheduler_config, broadcaster)
+                .await?;
+            Ok(())
+        });
+        scheduler_handles.push(scheduler_handle);
+    }
+
+    Ok((scheduler_handles, all_stats))
 }
 
 #[allow(clippy::arithmetic_side_effects)]
