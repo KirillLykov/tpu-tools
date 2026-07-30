@@ -43,6 +43,7 @@ pub struct TransactionGenerator {
     priority_fee_stats: Arc<PriorityFeeStats>,
     send_batch_size: usize,
     run_duration: Option<Duration>,
+    num_transactions: Option<NonZeroU64>,
     target_tps: Option<NonZeroU64>,
     workers_pull_size: usize,
 }
@@ -59,6 +60,7 @@ impl TransactionGenerator {
         priority_fee_stats: Arc<PriorityFeeStats>,
         send_batch_size: usize,
         duration: Option<Duration>,
+        num_transactions: Option<NonZeroU64>,
         target_tps: Option<NonZeroU64>,
         workers_pull_size: usize,
     ) -> Self {
@@ -72,6 +74,7 @@ impl TransactionGenerator {
             priority_fee_stats,
             send_batch_size,
             run_duration: duration,
+            num_transactions,
             target_tps,
             workers_pull_size,
         }
@@ -115,11 +118,15 @@ impl TransactionGenerator {
         let mut sender_index: usize = 0;
         let start = Instant::now();
         let mut next_batch_at = self.target_tps.map(|_| start);
+        let mut txs_scheduled: u64 = 0;
         loop {
-            if let Some(run_duration) = self.run_duration
-                && start.elapsed() >= run_duration
-            {
-                info!("Transaction generator is stopping...");
+            if let Some(stop_reason) = stop_reason(
+                self.run_duration,
+                self.num_transactions,
+                start.elapsed(),
+                txs_scheduled,
+            ) {
+                info!("Transaction generator is stopping: {stop_reason}.");
                 while let Some(result) = futures.join_next().await {
                     debug!("Future result {result:?}");
                 }
@@ -135,7 +142,12 @@ impl TransactionGenerator {
                 if let Some(next_batch_deadline) = next_batch_at {
                     tokio::time::sleep_until(next_batch_deadline).await;
                 }
-                let send_batch_size = self.send_batch_size;
+                let Some(send_batch_size) =
+                    next_batch_size(self.num_transactions, self.send_batch_size, txs_scheduled)
+                else {
+                    break;
+                };
+                txs_scheduled = txs_scheduled.saturating_add(send_batch_size as u64);
                 let transaction_params = self.transaction_params.clone();
                 let compute_unit_price = self.compute_unit_price;
                 let priority_fee_mode = self.priority_fee_mode.clone();
@@ -256,6 +268,38 @@ async fn send_batch(wired_txs_batch: Vec<Vec<u8>>, transactions_sender: Sender<T
         "Time to send into transactions queue: {} us",
         measure_send_to_queue.as_us()
     );
+}
+
+/// Returns the reason the generator should stop, if a configured limit
+/// (`--duration` or `--num-transactions`) has been reached.
+fn stop_reason(
+    run_duration: Option<Duration>,
+    num_transactions: Option<NonZeroU64>,
+    elapsed: Duration,
+    txs_scheduled: u64,
+) -> Option<&'static str> {
+    if run_duration.is_some_and(|run_duration| elapsed >= run_duration) {
+        Some("duration reached")
+    } else if num_transactions.is_some_and(|budget| txs_scheduled >= budget.get()) {
+        Some("requested tx count reached")
+    } else {
+        None
+    }
+}
+
+/// Number of transactions to schedule in the next batch, or `None` when the
+/// `--num-transactions` budget is exhausted.
+fn next_batch_size(
+    num_transactions: Option<NonZeroU64>,
+    send_batch_size: usize,
+    txs_scheduled: u64,
+) -> Option<usize> {
+    let Some(budget) = num_transactions else {
+        return Some(send_batch_size);
+    };
+    let remaining = budget.get().saturating_sub(txs_scheduled);
+    // The min() with send_batch_size makes the cast back to usize lossless.
+    (remaining > 0).then(|| remaining.min(send_batch_size as u64) as usize)
 }
 
 #[allow(clippy::arithmetic_side_effects)]

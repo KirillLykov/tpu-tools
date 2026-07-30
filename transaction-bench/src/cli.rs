@@ -164,9 +164,18 @@ pub struct ExecutionParams {
     #[clap(
         long,
         value_parser = parse_duration,
-        help = "If specified, limits the benchmark execution to the specified duration."
+        help = "If specified, limits the benchmark execution to the specified duration. May be \
+                combined with --num-transactions; whichever limit is reached first stops the run."
     )]
     pub duration: Option<Duration>,
+
+    #[clap(
+        long,
+        value_parser = value_parser!(NonZeroU64),
+        help = "If specified, limits the benchmark to sending this many transactions. May be \
+                combined with --duration; whichever limit is reached first stops the run."
+    )]
+    pub num_transactions: Option<NonZeroU64>,
 
     #[clap(
         long,
@@ -175,6 +184,27 @@ pub struct ExecutionParams {
                 transaction-bench switches to paced sending."
     )]
     pub target_tps: Option<NonZeroU64>,
+
+    #[clap(
+        long,
+        value_parser = value_parser!(NonZeroU64),
+        help = "Override the QUIC initial congestion window (in bytes) passed to tpu-client-next. \
+                Larger values skip TCP-style slow-start at connection startup so that \
+                transactions can be sent as fast as possible immediately. Defaults to \
+                tpu-client-next's built-in value (128 * PACKET_DATA_SIZE)."
+    )]
+    pub initial_congestion_window: Option<NonZeroU64>,
+
+    #[clap(
+        long,
+        default_value_t = 0,
+        help = "After the generator finishes, keep the scheduler channels open for up to this \
+                many seconds so tpu-client-next's worker queues and quinn send buffers can flush \
+                in-flight transactions before teardown. 0 (default) tears down immediately. \
+                Recommended when using --num-transactions, which otherwise drops the last \
+                in-flight batches."
+    )]
+    pub drain_seconds: u64,
 
     #[clap(
         long,
@@ -460,7 +490,10 @@ mod tests {
                 bind: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 0),
                 endpoint_configs: vec![],
                 duration: Some(Duration::from_secs(120)),
+                num_transactions: None,
                 target_tps: None,
+                initial_congestion_window: None,
+                drain_seconds: 0,
                 leader_tracker: LeaderTracker::PinnedLeaderTracker {
                     address: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8009),
                 },
