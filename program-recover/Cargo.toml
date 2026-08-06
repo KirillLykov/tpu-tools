@@ -1,0 +1,36 @@
+[package]
+name = "solana-program-recover"
+version = "0.1.0"
+authors = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+license = { workspace = true }
+edition = { workspace = true }
+
+[package.metadata.docs.rs]
+targets = ["x86_64-unknown-linux-gnu"]
+
+[dependencies]
+agave-logger = { workspace = true }
+bincode = { workspace = true }
+bs58 = { workspace = true }
+clap = { workspace = true, features = ["derive", "cargo"] }
+log = { workspace = true }
+serde_json = { workspace = true }
+solana-clap-v3-utils = { workspace = true }
+solana-commitment-config = { workspace = true }
+solana-loader-v3-interface = { workspace = true }
+solana-pubkey = { workspace = true, features = ["curve25519"] }
+solana-rpc-client = { workspace = true }
+solana-rpc-client-api = { workspace = true }
+solana-sdk-ids = { workspace = true }
+solana-signature = { workspace = true }
+solana-transaction-status = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+solana-message-v3 = { package = "solana-message", version = "3.1.0" }
+
+[lints]
+workspace = true

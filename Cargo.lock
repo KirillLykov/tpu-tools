@@ -8511,6 +8511,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "solana-program-recover"
+version = "0.1.0"
+dependencies = [
+ "agave-logger",
+ "bincode",
+ "bs58",
+ "clap 4.6.1",
+ "log",
+ "serde_json",
+ "solana-clap-v3-utils",
+ "solana-commitment-config",
+ "solana-loader-v3-interface",
+ "solana-message 3.1.0",
+ "solana-pubkey 4.1.0",
+ "solana-rpc-client",
+ "solana-rpc-client-api",
+ "solana-sdk-ids",
+ "solana-signature",
+ "solana-transaction-status",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "solana-program-runtime"
 version = "4.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
