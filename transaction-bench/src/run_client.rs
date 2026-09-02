@@ -1,7 +1,7 @@
 use {
     crate::{
         backpressured_broadcaster::BackpressuredBroadcaster,
-        cli::{EndpointConfig, ExecutionParams, TransactionParams},
+        cli::{EndpointConfig, PriorityFeeParams, TransactionParams},
         error::BenchClientError,
         generator::{TransactionGenerator, transaction_generator::check_num_conflict_groups},
         priority_fee::{PriorityFeeMode, PriorityFeeStats},
@@ -18,15 +18,12 @@ use {
         node_address_service::LeaderTpuCacheServiceConfig,
     },
     solana_tpu_tools_common::{
-        accounts_file::AccountsFile, blockhash_updater::BlockhashUpdater,
-        leader_updater::create_leader_updater,
+        accounts_file::AccountsFile,
+        blockhash_updater::BlockhashUpdater,
+        cli::LeaderTracker,
+        leader_updater::{LeaderUpdaterFactory, create_leader_updater},
     },
-    std::{
-        fmt::Debug,
-        num::{NonZeroU64, NonZeroUsize},
-        sync::Arc,
-        time::Duration,
-    },
+    std::{fmt::Debug, num::NonZeroUsize, sync::Arc, time::Duration},
     tokio::{
         sync::{mpsc, oneshot, watch},
         task::JoinHandle,
@@ -50,30 +47,20 @@ pub struct RunClientStats {
 
 pub type RunClientStatsSender = oneshot::Sender<RunClientStats>;
 
-async fn join_service<Error>(
-    handle: JoinHandle<Result<(), Error>>,
-    task_name: &str,
-) -> Result<(), BenchClientError>
-where
-    Error: Debug + Into<BenchClientError>,
-{
-    match handle.await {
-        Ok(Ok(_)) => {
-            info!("Task {task_name} completed successfully");
-            Ok(())
-        }
-        Ok(Err(e)) => {
-            error!("Task failed with error: {e:?}");
-            Err(e.into())
-        }
-        Err(e) => {
-            error!("Task was cancelled or panicked: {e:?}");
-            Err(BenchClientError::TaskJoinFailure {
-                task_name: task_name.to_string(),
-                reason: e.to_string(),
-            })
-        }
-    }
+#[derive(Clone)]
+pub struct ExecutionParams {
+    pub endpoint_configs: Vec<EndpointConfig>,
+    pub duration: Option<Duration>,
+    pub num_transactions: Option<u64>,
+    pub target_tps: Option<u64>,
+    pub initial_congestion_window: Option<u64>,
+    pub drain_seconds: u64,
+    pub num_max_open_connections: usize,
+    pub workers_pull_size: usize,
+    pub send_fanout: usize,
+    pub compute_unit_price: Option<u64>,
+    pub priority_fee_params: PriorityFeeParams,
+    pub leader_tracker: LeaderTracker,
 }
 
 pub async fn run_client(
@@ -81,13 +68,23 @@ pub async fn run_client(
     websocket_url: String,
     accounts: AccountsFile,
     transaction_params: TransactionParams,
-    execution_params: ExecutionParams,
+    ExecutionParams {
+        endpoint_configs,
+        duration,
+        num_transactions,
+        target_tps,
+        initial_congestion_window,
+        drain_seconds,
+        num_max_open_connections,
+        workers_pull_size,
+        send_fanout,
+        compute_unit_price,
+        priority_fee_params,
+        leader_tracker,
+    }: ExecutionParams,
     stats_sender: Option<RunClientStatsSender>,
     cancel: CancellationToken,
 ) -> Result<(), BenchClientError> {
-    let endpoint_configs = execution_params
-        .resolved_endpoint_configs()
-        .map_err(BenchClientError::InvalidCliArguments)?;
     let endpoint_identities = endpoint_configs
         .iter()
         .map(load_identity)
@@ -97,9 +94,6 @@ pub async fn run_client(
         .simple_transfer_tx_params
         .tx_batch_size
         .get();
-    let workers_pull_size = execution_params.workers_pull_size.get();
-    let num_transactions = execution_params.num_transactions.map(NonZeroU64::get);
-    let target_tps = execution_params.target_tps.map(NonZeroU64::get);
     if let Some(target_tps) = target_tps {
         info!("Using {workers_pull_size} generator workers for target {target_tps} tx/s.");
     }
@@ -165,7 +159,7 @@ pub async fn run_client(
 
     let blockhash_task_handle = tokio::spawn(async move { blockhash_updater.run().await });
 
-    let priority_fee_mode = PriorityFeeMode::try_from(&execution_params.priority_fee_params)
+    let priority_fee_mode = PriorityFeeMode::try_from(&priority_fee_params)
         .map_err(BenchClientError::InvalidCliArguments)?;
     let priority_fee_stats = Arc::new(PriorityFeeStats::default());
 
@@ -188,10 +182,10 @@ pub async fn run_client(
         blockhash_receiver,
         transaction_senders,
         transaction_params,
-        execution_params.compute_unit_price,
+        compute_unit_price,
         priority_fee_mode,
         priority_fee_stats.clone(),
-        execution_params.duration,
+        duration,
         num_transactions,
         target_tps,
         generate_tx_batch_size,
@@ -203,14 +197,24 @@ pub async fn run_client(
         refresh_nodes_info_every: Duration::from_secs(30),
         max_consecutive_failures: 5,
     };
-    let (scheduler_handles, all_stats) = build_schedulers(
+    let leader_updater_factory = create_leader_updater(
         rpc_client.clone(),
+        leader_tracker,
+        leader_updater_config,
         websocket_url,
-        &execution_params,
+        cancel.child_token(),
+    )
+    .await?;
+    let (scheduler_handles, all_stats) = build_schedulers(
+        &leader_updater_factory,
+        SchedulerConnectionParams {
+            num_max_open_connections,
+            send_fanout,
+            initial_congestion_window,
+        },
         endpoint_configs,
         endpoint_identities,
         transaction_receivers,
-        leader_updater_config,
         cancel.clone(),
     )
     .await?;
@@ -228,26 +232,35 @@ pub async fn run_client(
         debug!("Stats receiver has been dropped.");
     }
 
-    join_service(transaction_generator_task_handle, "TransactionGenerator").await?;
-
-    // The generator has dropped its senders. Keep our retained clones alive for
-    // the drain window so the schedulers don't tear down while tpu-client-next's
-    // worker queues and quinn send buffers still hold in-flight transactions.
-    if execution_params.drain_seconds > 0 {
-        info!(
-            "Generator finished; draining in-flight transactions for {}s.",
-            execution_params.drain_seconds
-        );
-        tokio::time::sleep(Duration::from_secs(execution_params.drain_seconds)).await;
+    let mut result = join_service(transaction_generator_task_handle, "TransactionGenerator").await;
+    if result.is_err() {
+        cancel.cancel();
+    } else {
+        // The generator has dropped its senders. Keep our retained clones alive for
+        // the drain window so the schedulers don't tear down while tpu-client-next's
+        // worker queues and quinn send buffers still hold in-flight transactions.
+        if drain_seconds > 0 {
+            info!("Generator finished; draining in-flight transactions for {drain_seconds}s.");
+            tokio::time::sleep(Duration::from_secs(drain_seconds)).await;
+        }
     }
     // Closing the channels lets the tpu-client-next instances shut down.
     drop(drain_senders);
 
-    join_service(blockhash_task_handle, "BlockhashUpdater").await?;
+    let blockhash_result = join_service(blockhash_task_handle, "BlockhashUpdater").await;
+    if result.is_ok() {
+        result = blockhash_result;
+    }
     for (i, handle) in scheduler_handles.into_iter().enumerate() {
         let name = format!("Scheduler-{i}");
-        join_service(handle, &name).await?;
+        let scheduler_result = join_service(handle, &name).await;
+        if result.is_ok() {
+            result = scheduler_result;
+        }
     }
+    let shutdown_result = leader_updater_factory.shutdown().await;
+    result?;
+    shutdown_result?;
     Ok(())
 }
 
@@ -262,14 +275,18 @@ fn load_identity(endpoint_config: &EndpointConfig) -> Result<Option<Keypair>, Be
         .transpose()
 }
 
+struct SchedulerConnectionParams {
+    num_max_open_connections: usize,
+    send_fanout: usize,
+    initial_congestion_window: Option<u64>,
+}
+
 async fn build_schedulers(
-    rpc_client: Arc<RpcClient>,
-    websocket_url: String,
-    execution_params: &ExecutionParams,
+    leader_updater_factory: &LeaderUpdaterFactory,
+    scheduler_params: SchedulerConnectionParams,
     endpoint_configs: Vec<EndpointConfig>,
     endpoint_identities: Vec<Option<Keypair>>,
     transaction_receivers: Vec<mpsc::Receiver<WireTransaction>>,
-    leader_updater_config: LeaderTpuCacheServiceConfig,
     cancel: CancellationToken,
 ) -> Result<
     (
@@ -286,30 +303,21 @@ async fn build_schedulers(
         .zip(endpoint_identities)
         .zip(transaction_receivers)
     {
-        let leader_updater = create_leader_updater(
-            rpc_client.clone(),
-            execution_params.leader_tracker.clone(),
-            leader_updater_config.clone(),
-            websocket_url.clone(),
-            cancel.child_token(),
-        )
-        .await?;
+        let leader_updater = leader_updater_factory.create_updater().await?;
 
         let stake_identity = validator_identity.as_ref().map(StakeIdentity::new);
         let scheduler_config = ConnectionWorkersSchedulerConfig {
             bind: BindTarget::Address(endpoint_config.bind),
             stake_identity,
-            num_connections: NonZeroUsize::new(execution_params.num_max_open_connections)
+            num_connections: NonZeroUsize::new(scheduler_params.num_max_open_connections)
                 .expect("num-max-open-connections must be non-zero"),
             worker_channel_size: WORKER_CHANNEL_SIZE,
             max_reconnect_attempts: MAX_RECONNECT_ATTEMPTS,
             leaders_fanout: Fanout {
-                send: execution_params.send_fanout,
-                connect: execution_params.send_fanout.saturating_add(1),
+                send: scheduler_params.send_fanout,
+                connect: scheduler_params.send_fanout.saturating_add(1),
             },
-            override_initial_congestion_window: execution_params
-                .initial_congestion_window
-                .map(NonZeroU64::get),
+            override_initial_congestion_window: scheduler_params.initial_congestion_window,
         };
 
         let (_, update_identity_receiver) = watch::channel(None);
@@ -332,4 +340,30 @@ async fn build_schedulers(
     }
 
     Ok((scheduler_handles, all_stats))
+}
+
+async fn join_service<Error>(
+    handle: JoinHandle<Result<(), Error>>,
+    task_name: &str,
+) -> Result<(), BenchClientError>
+where
+    Error: Debug + Into<BenchClientError>,
+{
+    match handle.await {
+        Ok(Ok(_)) => {
+            info!("Task {task_name} completed successfully");
+            Ok(())
+        }
+        Ok(Err(e)) => {
+            error!("Task failed with error: {e:?}");
+            Err(e.into())
+        }
+        Err(e) => {
+            error!("Task was cancelled or panicked: {e:?}");
+            Err(BenchClientError::TaskJoinFailure {
+                task_name: task_name.to_string(),
+                reason: e.to_string(),
+            })
+        }
+    }
 }

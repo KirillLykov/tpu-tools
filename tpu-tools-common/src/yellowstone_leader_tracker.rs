@@ -8,17 +8,15 @@ use {
     futures_util::stream::StreamExt,
     log::*,
     solana_rpc_client::nonblocking::rpc_client::RpcClient,
-    solana_tpu_client_next::{
-        leader_updater::LeaderUpdater,
-        node_address_service::{
-            LeaderTpuCacheServiceConfig, NodeAddressService, NodeAddressServiceError, SlotEvent,
-        },
+    solana_tpu_client_next::node_address_service::{
+        LeaderTpuCacheServiceConfig, NodeAddressProvider, NodeAddressService,
+        NodeAddressServiceError, SlotEvent,
     },
-    std::{collections::HashMap, io, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration},
+    std::{collections::HashMap, io, path::PathBuf, sync::Arc, time::Duration},
     thiserror::Error,
     tokio::fs,
     tokio_util::sync::CancellationToken,
-    tonic::{Status, async_trait},
+    tonic::Status,
     yellowstone_grpc_client::{
         ClientTlsConfig, GeyserGrpcBuilderError, GeyserGrpcClient, GeyserGrpcClientError,
     },
@@ -57,14 +55,15 @@ impl YellowstoneNodeAddressService {
         yellowstone_token: Option<&str>,
         config: LeaderTpuCacheServiceConfig,
         cancel: CancellationToken,
-    ) -> Result<Self, Error> {
+    ) -> Result<(NodeAddressProvider, Self), Error> {
         let stream = init_stream(yellowstone_url.clone(), yellowstone_token).await?;
         let filtered_stream =
             stream.filter_map(|update| async { map_yellowstone_update_to_slot_event(update) });
 
-        let service = NodeAddressService::run(rpc_client, filtered_stream, config, cancel).await?;
+        let (provider, service) =
+            NodeAddressService::run(rpc_client, filtered_stream, config, cancel).await?;
 
-        Ok(Self(service))
+        Ok((provider, Self(service)))
     }
 
     /// Shuts down the underlying node-address service.
@@ -157,17 +156,6 @@ fn build_request() -> SubscribeRequest {
         accounts_data_slice: vec![],
         ping: None,
         from_slot: None,
-    }
-}
-
-#[async_trait]
-impl LeaderUpdater for YellowstoneNodeAddressService {
-    fn next_leaders(&mut self, lookahead_leaders: usize) -> Vec<SocketAddr> {
-        self.0.next_leaders(lookahead_leaders)
-    }
-
-    async fn stop(&mut self) {
-        let _ = self.shutdown().await;
     }
 }
 

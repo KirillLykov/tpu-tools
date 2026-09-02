@@ -1,5 +1,6 @@
 use {
     crate::csv_writer::{CSVRecord, TransactionSendStatus},
+    itertools::Itertools,
     log::{debug, warn},
     solana_clock::Slot,
     solana_measure::measure::Measure,
@@ -9,7 +10,7 @@ use {
         workers_cache::{WorkersCache, WorkersCacheError, shutdown_worker},
     },
     solana_tpu_tools_common::leader_updater::LeaderUpdaterWithSlot,
-    std::{sync::Arc, time::Duration},
+    std::{net::SocketAddr, sync::Arc, time::Duration},
     tokio::time::interval,
     tokio_util::sync::CancellationToken,
 };
@@ -46,14 +47,18 @@ where
     let mut workers = WorkersCache::new(num_connections, cancel.clone());
 
     let mut ticker = interval(rate);
+    let mut next_leaders = Vec::with_capacity(leaders_fanout.connect);
+    let mut connect_leaders = Vec::with_capacity(leaders_fanout.connect);
+    let mut send_leaders = Vec::with_capacity(leaders_fanout.send);
     let main_loop = async {
         loop {
             ticker.tick().await;
             let current_slot = leader_updater.get_current_slot();
 
-            let connect_leaders = leader_updater.next_leaders(leaders_fanout.connect);
-            let send_leaders = leader_updater.next_leaders(leaders_fanout.send);
-            //extract_send_leaders(&connect_leaders, leaders_fanout.send);
+            next_leaders.clear();
+            leader_updater.next_leaders(leaders_fanout.connect, &mut next_leaders);
+            select_unique_leaders(&next_leaders, leaders_fanout.connect, &mut connect_leaders);
+            select_unique_leaders(&next_leaders, leaders_fanout.send, &mut send_leaders);
             debug!(
                 "Connect leaders: {connect_leaders:?}, send leaders: {send_leaders:?} for slot \
                  {current_slot}, leader_fanout: {leaders_fanout:?}."
@@ -61,9 +66,9 @@ where
 
             // add future leaders to the cache to hide the latency of opening
             // the connection.
-            for peer in connect_leaders {
+            for peer in &connect_leaders {
                 if let Some(evicted_worker) = workers.ensure_worker(
-                    peer,
+                    *peer,
                     &endpoint,
                     worker_channel_size,
                     max_reconnect_attempts,
@@ -149,6 +154,14 @@ where
     workers.shutdown().await;
 
     endpoint.close(0u32.into(), b"Closing connection");
-    leader_updater.stop().await;
     Ok(stats)
+}
+
+fn select_unique_leaders(
+    leaders: &[SocketAddr],
+    max_leaders: usize,
+    selected_leaders: &mut Vec<SocketAddr>,
+) {
+    selected_leaders.clear();
+    selected_leaders.extend(leaders.iter().take(max_leaders).copied().unique());
 }

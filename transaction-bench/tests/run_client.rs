@@ -26,14 +26,14 @@ use {
     },
     solana_transaction_bench::{
         cli::{
-            ExecutionParams, InstructionPaddingParams, PriorityFeeParams, SimpleTransferTxParams,
+            EndpointConfig, InstructionPaddingParams, PriorityFeeParams, SimpleTransferTxParams,
             TransactionParams,
         },
-        run_client::run_client,
+        run_client::{ExecutionParams, run_client},
     },
     std::{
         net::{IpAddr, Ipv4Addr, SocketAddr},
-        num::{NonZeroU64, NonZeroUsize},
+        num::NonZeroUsize,
         sync::Arc,
         time::{Duration, Instant},
     },
@@ -137,16 +137,17 @@ fn test_transactions_sending() {
                 use_txv1: false,
             },
             ExecutionParams {
-                staked_identity_files: vec![],
-                bind: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 0),
-                endpoint_configs: vec![],
+                endpoint_configs: vec![EndpointConfig {
+                    bind: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 0),
+                    staked_identity_file: None,
+                }],
                 duration: Some(Duration::from_secs(2)),
                 num_transactions: None,
-                target_tps: Some(NonZeroU64::new(10).unwrap()),
+                target_tps: Some(10),
                 initial_congestion_window: None,
                 drain_seconds: 0,
                 num_max_open_connections: 1,
-                workers_pull_size: NonZeroUsize::new(1).unwrap(),
+                workers_pull_size: 1,
                 send_fanout: 1,
                 compute_unit_price: Some(100),
                 priority_fee_params: PriorityFeeParams {

@@ -15,12 +15,14 @@ use {
         cli::{LeaderTracker, parse_recipient},
     },
     solana_transaction_bench::{
-        cli::{ClientCliParameters, Command, build_cli_parameters},
+        cli::{
+            CliExecutionParams, ClientCliParameters, Command, EndpointConfig, build_cli_parameters,
+        },
         error::BenchClientError,
         mock_rpc_client::new_mock_rpc_client,
-        run_client::{RunClientStats, run_client},
+        run_client::{ExecutionParams, RunClientStats, run_client},
     },
-    std::{sync::Arc, time::Duration},
+    std::{net::SocketAddr, num::NonZeroU64, path::PathBuf, sync::Arc, time::Duration},
     tokio::{sync::oneshot, task::JoinHandle},
     tokio_util::sync::CancellationToken,
 };
@@ -95,6 +97,9 @@ async fn run(parameters: ClientCliParameters) -> Result<(), BenchClientError> {
                 )
                 .await?
             };
+
+            let execution_params = resolve_cli_execution_params(execution_params);
+
             let cancel = CancellationToken::new();
             let (stats_sender, stats_receiver) = oneshot::channel();
             let metrics_task = spawn_metrics_reporter(stats_receiver, cancel.clone());
@@ -115,6 +120,8 @@ async fn run(parameters: ClientCliParameters) -> Result<(), BenchClientError> {
             transaction_params,
             execution_params,
         } => {
+            let execution_params = resolve_cli_execution_params(execution_params);
+
             let accounts = read_accounts_file(read_accounts.accounts_file.clone());
             let cancel = CancellationToken::new();
             let (stats_sender, stats_receiver) = oneshot::channel();
@@ -301,6 +308,65 @@ async fn finish_client_run(
     result
 }
 
+fn resolve_cli_execution_params(
+    CliExecutionParams {
+        staked_identity_files,
+        bind,
+        endpoint_configs,
+        duration,
+        num_transactions,
+        target_tps,
+        initial_congestion_window,
+        drain_seconds,
+        num_max_open_connections,
+        workers_pull_size,
+        send_fanout,
+        compute_unit_price,
+        priority_fee_params,
+        leader_tracker,
+    }: CliExecutionParams,
+) -> ExecutionParams {
+    ExecutionParams {
+        endpoint_configs: resolve_endpoint_configs(endpoint_configs, staked_identity_files, bind),
+        duration,
+        num_transactions: num_transactions.map(NonZeroU64::get),
+        target_tps: target_tps.map(NonZeroU64::get),
+        initial_congestion_window: initial_congestion_window.map(NonZeroU64::get),
+        drain_seconds,
+        num_max_open_connections,
+        workers_pull_size: workers_pull_size.get(),
+        send_fanout,
+        compute_unit_price,
+        priority_fee_params,
+        leader_tracker,
+    }
+}
+
+fn resolve_endpoint_configs(
+    endpoint_configs: Vec<EndpointConfig>,
+    staked_identity_files: Vec<PathBuf>,
+    bind: SocketAddr,
+) -> Vec<EndpointConfig> {
+    if endpoint_configs.is_empty() {
+        if staked_identity_files.is_empty() {
+            return vec![EndpointConfig {
+                bind,
+                staked_identity_file: None,
+            }];
+        }
+
+        return staked_identity_files
+            .into_iter()
+            .map(|staked_identity_file| EndpointConfig {
+                bind,
+                staked_identity_file: Some(staked_identity_file),
+            })
+            .collect();
+    }
+
+    endpoint_configs
+}
+
 #[cfg(test)]
 mod tests {
     use {
@@ -308,8 +374,8 @@ mod tests {
         solana_commitment_config::CommitmentConfig,
         solana_tpu_tools_common::cli::{AccountParams, DeleteAccounts, WriteAccounts},
         solana_transaction_bench::cli::{
-            ExecutionParams, InstructionPaddingParams, PriorityFeeParams, SimpleTransferTxParams,
-            TransactionParams,
+            CliExecutionParams, InstructionPaddingParams, PriorityFeeParams,
+            SimpleTransferTxParams, TransactionParams,
         },
         std::{
             net::{IpAddr, Ipv4Addr, SocketAddr},
@@ -329,7 +395,7 @@ mod tests {
                     num_payers: 4,
                     payer_account_balance: 1_000,
                 },
-                execution_params: ExecutionParams {
+                execution_params: CliExecutionParams {
                     staked_identity_files: vec![],
                     bind: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
                     endpoint_configs: vec![],
