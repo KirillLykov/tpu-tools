@@ -19,6 +19,7 @@ use {
         task::JoinSet,
         time::{Duration, Instant},
     },
+    tokio_util::sync::CancellationToken,
 };
 
 const COMPUTE_BUDGET_INSTRUCTION_CU_COST: u32 = 150;
@@ -47,6 +48,7 @@ pub struct TransactionGenerator {
     target_tps: Option<u64>,
     generate_tx_batch_size: usize,
     workers_pull_size: usize,
+    cancel: CancellationToken,
 }
 
 impl TransactionGenerator {
@@ -64,6 +66,7 @@ impl TransactionGenerator {
         target_tps: Option<u64>,
         generate_tx_batch_size: usize,
         workers_pull_size: usize,
+        cancel: CancellationToken,
     ) -> Self {
         Self {
             accounts,
@@ -78,6 +81,7 @@ impl TransactionGenerator {
             target_tps,
             generate_tx_batch_size,
             workers_pull_size,
+            cancel,
         }
     }
 
@@ -128,6 +132,7 @@ impl TransactionGenerator {
                 txs_scheduled,
             ) {
                 info!("Transaction generator is stopping: {stop_reason}.");
+                self.cancel.cancel();
                 while let Some(result) = futures.join_next().await {
                     debug!("Future result {result:?}");
                 }
@@ -174,6 +179,7 @@ impl TransactionGenerator {
                             &mut lamports_index,
                             total_pairs,
                         );
+                        let cancel = self.cancel.clone();
                         futures.spawn(async move {
                             let Ok(wired_tx_batch) = generate_transfer_transaction_batch(
                                 payers,
@@ -192,7 +198,13 @@ impl TransactionGenerator {
                                 return;
                             };
 
-                            send_batch(wired_tx_batch, transactions_sender).await;
+                            tokio::select! {
+                                _ = send_batch(wired_tx_batch, transactions_sender) => {}
+                                _ = cancel.cancelled()  => {}
+                                _ = tokio::time::sleep(Duration::from_secs(5)) => {
+                                    debug!("Timed out sending generated txs to the channel.");
+                                }
+                            }
                         });
 
                         let receivers_consumed =

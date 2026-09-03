@@ -196,6 +196,7 @@ pub async fn run_client(
         target_tps,
         generate_tx_batch_size,
         workers_pull_size,
+        cancel.child_token(),
     );
 
     let leader_updater_config = LeaderTpuCacheServiceConfig {
