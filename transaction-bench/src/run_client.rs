@@ -240,9 +240,7 @@ pub async fn run_client(
     }
 
     let mut result = join_service(transaction_generator_task_handle, "TransactionGenerator").await;
-    if result.is_err() {
-        cancel.cancel();
-    } else {
+    if result.is_ok() {
         // The generator has dropped its senders. Keep our retained clones alive for
         // the drain window so the schedulers don't tear down while tpu-client-next's
         // worker queues and quinn send buffers still hold in-flight transactions.
@@ -251,7 +249,10 @@ pub async fn run_client(
             tokio::time::sleep(Duration::from_secs(drain_seconds)).await;
         }
     }
-    // Closing the channels lets the tpu-client-next instances shut down.
+    // After the drain phase, cancel services before joining scheduler tasks. This
+    // also wakes schedulers that are blocked below the transaction channel.
+    cancel.cancel();
+    // Closing the channels lets the tpu-client-next instances finish draining.
     drop(drain_senders);
 
     let blockhash_result = join_service(blockhash_task_handle, "BlockhashUpdater").await;
