@@ -167,7 +167,7 @@ pub async fn run_client(
         refresh_nodes_info_every: Duration::from_secs(30),
         max_consecutive_failures: 5,
     };
-    let leader_updater = create_leader_updater(
+    let leader_updater_factory = create_leader_updater(
         rpc_client.clone(),
         leader_tracker,
         config,
@@ -179,6 +179,7 @@ pub async fn run_client(
     tasks.spawn({
         let cancel = cancel_tx_sending.clone();
         async move {
+            let leader_updater = leader_updater_factory.create_updater().await?;
             let config = ConnectionWorkersSchedulerConfig {
                 bind: BindTarget::Address(bind),
                 stake_identity: validator_identity.map(|ident| StakeIdentity::new(&ident)),
@@ -245,7 +246,11 @@ pub async fn run_client(
                 },
             );
 
-            scheduler.await?;
+            let scheduler_result = scheduler.await;
+            let shutdown_result = leader_updater_factory.shutdown().await;
+
+            scheduler_result?;
+            shutdown_result?;
             debug!("Scheduler stopped.");
             Ok(())
         }

@@ -1,22 +1,18 @@
 use {
-    crate::leader_updater::LeaderSlotEstimator,
     async_stream::stream,
     futures::Stream,
     log::*,
     serde::{Deserialize, Deserializer},
     solana_clock::Slot,
     solana_rpc_client::nonblocking::rpc_client::RpcClient,
-    solana_tpu_client_next::{
-        leader_updater::LeaderUpdater,
-        node_address_service::{
-            LeaderTpuCacheServiceConfig, NodeAddressService, NodeAddressServiceError, SlotEvent,
-        },
+    solana_tpu_client_next::node_address_service::{
+        LeaderTpuCacheServiceConfig, NodeAddressProvider, NodeAddressService,
+        NodeAddressServiceError, SlotEvent,
     },
     std::{net::SocketAddr, sync::Arc},
     thiserror::Error,
     tokio::net::UdpSocket,
     tokio_util::sync::CancellationToken,
-    tonic::async_trait,
 };
 
 pub struct CustomGeyserNodeAddressService(NodeAddressService);
@@ -36,18 +32,20 @@ impl CustomGeyserNodeAddressService {
         bind_address: SocketAddr,
         config: LeaderTpuCacheServiceConfig,
         cancel: CancellationToken,
-    ) -> Result<Self, Error> {
+    ) -> Result<(NodeAddressProvider, Self), Error> {
         #[allow(clippy::disallowed_methods)]
         let socket = UdpSocket::bind(bind_address)
             .await
             .map_err(|_e| Error::UdpSocketInitializationFailed)?;
         let stream = udp_slot_event_stream(socket);
-        let service = NodeAddressService::run(rpc_client, stream, config, cancel).await?;
 
-        Ok(Self(service))
+        let (provider, service) =
+            NodeAddressService::run(rpc_client, stream, config, cancel).await?;
+
+        Ok((provider, Self(service)))
     }
 
-    pub async fn shutdown(&mut self) -> Result<(), NodeAddressServiceError> {
+    pub async fn shutdown(&mut self) -> Result<(), Error> {
         self.0.shutdown().await?;
         Ok(())
     }
@@ -79,24 +77,6 @@ fn udp_slot_event_stream(socket: UdpSocket) -> impl Stream<Item = SlotEvent> + S
                 }
             }
         }
-    }
-}
-
-#[async_trait]
-impl LeaderUpdater for CustomGeyserNodeAddressService {
-    fn next_leaders(&mut self, lookahead_leaders: usize) -> Vec<SocketAddr> {
-        self.0.next_leaders(lookahead_leaders)
-    }
-
-    async fn stop(&mut self) {
-        let _ = self.shutdown().await;
-    }
-}
-
-#[async_trait]
-impl LeaderSlotEstimator for CustomGeyserNodeAddressService {
-    fn get_current_slot(&mut self) -> Slot {
-        self.0.estimated_current_slot()
     }
 }
 

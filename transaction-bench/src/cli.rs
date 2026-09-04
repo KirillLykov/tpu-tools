@@ -17,8 +17,6 @@ use {
     tokio::time::Duration,
 };
 
-const DEFAULT_BIND_ADDRESS: &str = "0.0.0.0:0";
-
 fn parse_and_normalize_url(addr: &str) -> Result<String, String> {
     match parse_url_or_moniker(addr) {
         Ok(parsed) => Ok(normalize_to_url_if_moniker(&parsed)),
@@ -40,12 +38,6 @@ fn parse_endpoint_config(config: &str) -> Result<EndpointConfig, String> {
         bind,
         staked_identity_file,
     })
-}
-
-fn default_bind_address() -> SocketAddr {
-    DEFAULT_BIND_ADDRESS
-        .parse()
-        .expect("default bind address should be valid")
 }
 
 #[derive(Parser, Debug, PartialEq, Eq)]
@@ -108,7 +100,7 @@ pub enum Command {
         account_params: AccountParams,
 
         #[clap(flatten)]
-        execution_params: ExecutionParams,
+        execution_params: CliExecutionParams,
 
         #[clap(flatten)]
         transaction_params: TransactionParams,
@@ -120,7 +112,7 @@ pub enum Command {
         read_accounts: ReadAccounts,
 
         #[clap(flatten)]
-        execution_params: ExecutionParams,
+        execution_params: CliExecutionParams,
 
         #[clap(flatten)]
         transaction_params: TransactionParams,
@@ -135,7 +127,7 @@ pub enum Command {
 
 #[derive(Args, Clone, Debug, PartialEq, Eq)]
 #[clap(rename_all = "kebab-case")]
-pub struct ExecutionParams {
+pub struct CliExecutionParams {
     // Cannot use value_parser to read keypair file because Keypair is not Clone.
     #[clap(
         long = "staked-identity-file",
@@ -148,7 +140,7 @@ pub struct ExecutionParams {
 
     /// Address to bind on, default will listen on all available interfaces, 0 that
     /// OS will choose the port.
-    #[clap(long, help = "bind", default_value = DEFAULT_BIND_ADDRESS)]
+    #[clap(long, help = "bind", default_value = "0.0.0.0:0")]
     pub bind: SocketAddr,
 
     #[clap(
@@ -247,38 +239,6 @@ pub struct ExecutionParams {
 pub struct EndpointConfig {
     pub bind: SocketAddr,
     pub staked_identity_file: Option<PathBuf>,
-}
-
-impl ExecutionParams {
-    pub fn resolved_endpoint_configs(&self) -> Result<Vec<EndpointConfig>, String> {
-        if self.endpoint_configs.is_empty() {
-            if self.staked_identity_files.is_empty() {
-                return Ok(vec![EndpointConfig {
-                    bind: self.bind,
-                    staked_identity_file: None,
-                }]);
-            }
-
-            return Ok(self
-                .staked_identity_files
-                .iter()
-                .cloned()
-                .map(|staked_identity_file| EndpointConfig {
-                    bind: self.bind,
-                    staked_identity_file: Some(staked_identity_file),
-                })
-                .collect());
-        }
-
-        if !self.staked_identity_files.is_empty() || self.bind != default_bind_address() {
-            return Err(
-                "cannot combine --endpoint-config with --bind or --staked-identity-file"
-                    .to_string(),
-            );
-        }
-
-        Ok(self.endpoint_configs.clone())
-    }
 }
 
 #[derive(Args, Clone, Debug, PartialEq, Eq)]
@@ -404,7 +364,7 @@ pub fn build_cli_parameters() -> ClientCliParameters {
     ClientCliParameters::parse()
 }
 
-/// CLI flags controlling the additional priority fee component. Flattened into [`ExecutionParams`];
+/// CLI flags controlling the additional priority fee component. Flattened into [`CliExecutionParams`];
 /// convert to a runtime [`PriorityFeeMode`] via [`TryFrom`].
 #[derive(Args, Clone, Debug, PartialEq, Eq)]
 #[clap(rename_all = "kebab-case")]
@@ -476,7 +436,7 @@ mod tests {
         )
     }
 
-    fn get_common_execution_params(keypair_file_name: &str) -> (Vec<&str>, ExecutionParams) {
+    fn get_common_execution_params(keypair_file_name: &str) -> (Vec<&str>, CliExecutionParams) {
         (
             vec![
                 "--staked-identity-file",
@@ -490,7 +450,7 @@ mod tests {
                 "pinned-leader-tracker",
                 "127.0.0.1:8009",
             ],
-            ExecutionParams {
+            CliExecutionParams {
                 staked_identity_files: vec![PathBuf::from(&keypair_file_name)],
                 bind: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 0),
                 endpoint_configs: vec![],
@@ -648,76 +608,6 @@ mod tests {
     }
 
     #[test]
-    fn test_execution_params_resolve_single_endpoint_defaults() {
-        let (_, execution_params) = get_common_execution_params("/home/testUser/masterKey.json");
-
-        assert_eq!(
-            execution_params.resolved_endpoint_configs().unwrap(),
-            vec![EndpointConfig {
-                bind: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 0),
-                staked_identity_file: Some(PathBuf::from("/home/testUser/masterKey.json")),
-            }]
-        );
-    }
-
-    #[test]
-    fn test_execution_params_resolve_multiple_staked_identity_files() {
-        let (_, mut execution_params) =
-            get_common_execution_params("/home/testUser/masterKey.json");
-        execution_params.staked_identity_files = vec![
-            "/home/testUser/key1.json".into(),
-            "/home/testUser/key2.json".into(),
-        ];
-
-        assert_eq!(
-            execution_params.resolved_endpoint_configs().unwrap(),
-            vec![
-                EndpointConfig {
-                    bind: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 0),
-                    staked_identity_file: Some(PathBuf::from("/home/testUser/key1.json")),
-                },
-                EndpointConfig {
-                    bind: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 0),
-                    staked_identity_file: Some(PathBuf::from("/home/testUser/key2.json")),
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn test_execution_params_resolve_multiple_endpoint_configs() {
-        let mut execution_params = get_common_execution_params("/home/testUser/masterKey.json").1;
-        execution_params.staked_identity_files = vec![];
-        execution_params.bind = default_bind_address();
-        execution_params.endpoint_configs = vec![
-            EndpointConfig {
-                bind: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 9000),
-                staked_identity_file: Some(PathBuf::from("/home/testUser/key1.json")),
-            },
-            EndpointConfig {
-                bind: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 9001),
-                staked_identity_file: None,
-            },
-        ];
-
-        assert_eq!(
-            execution_params.resolved_endpoint_configs().unwrap(),
-            execution_params.endpoint_configs
-        );
-    }
-
-    #[test]
-    fn test_execution_params_rejects_mixed_endpoint_flags() {
-        let mut execution_params = get_common_execution_params("/home/testUser/masterKey.json").1;
-        execution_params.endpoint_configs = vec![EndpointConfig {
-            bind: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 9000),
-            staked_identity_file: None,
-        }];
-
-        assert!(execution_params.resolved_endpoint_configs().is_err());
-    }
-
-    #[test]
     fn test_parse_multiple_endpoint_configs() {
         let keypair_file_name = "/home/testUser/masterKey.json";
         let mut args = vec![
@@ -769,6 +659,44 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn test_endpoint_config_conflicts_with_legacy_endpoint_flags() {
+        let keypair_file_name = "/home/testUser/masterKey.json";
+        let mut base_args = vec![
+            "test",
+            "-ul",
+            "--authority",
+            keypair_file_name,
+            "run",
+            "--endpoint-config",
+            "127.0.0.1:9000,/home/testUser/key1.json",
+            "--lamports-to-transfer",
+            "1000",
+            "--transfer-tx-cu-budget",
+            "600",
+        ];
+        let (account_args, _account_params) = get_common_account_params();
+        base_args.extend(account_args.iter());
+        base_args.extend([
+            "--duration",
+            "120",
+            "--send-fanout",
+            "2",
+            "--compute-unit-price",
+            "1000",
+        ]);
+
+        let mut args = base_args.clone();
+        args.extend(["--bind", "0.0.0.0:0"]);
+        args.extend(["pinned-leader-tracker", "127.0.0.1:8009"]);
+        assert!(ClientCliParameters::try_parse_from(args).is_err());
+
+        let mut args = base_args;
+        args.extend(["--staked-identity-file", "/home/testUser/key2.json"]);
+        args.extend(["pinned-leader-tracker", "127.0.0.1:8009"]);
+        assert!(ClientCliParameters::try_parse_from(args).is_err());
     }
 
     #[test]

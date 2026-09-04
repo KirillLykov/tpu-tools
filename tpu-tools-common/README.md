@@ -56,7 +56,7 @@ async fn example() -> Result<(), Box<dyn std::error::Error>> {
         max_consecutive_failures: 5,
     };
 
-    let mut leader_updater = create_leader_updater(
+    let leader_updater_factory = create_leader_updater(
         rpc_client,
         leader_tracker,
         config,
@@ -64,10 +64,12 @@ async fn example() -> Result<(), Box<dyn std::error::Error>> {
         cancel,
     )
     .await?;
+    let mut leader_updater = leader_updater_factory.create_updater().await?;
 
     let _current_blockhash = *blockhash_receiver.borrow();
-    let _next_leaders = leader_updater.next_leaders(1);
-    leader_updater.stop().await;
+    let mut next_leaders = Vec::new();
+    leader_updater.next_leaders(1, &mut next_leaders);
+    leader_updater_factory.shutdown().await?;
     Ok(())
 }
 ```

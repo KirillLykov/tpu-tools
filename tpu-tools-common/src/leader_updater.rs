@@ -1,7 +1,9 @@
 //! Leader updater construction for TPU tools.
 //!
 //! The factory in this module adapts command-line leader tracker selection into
-//! `solana-tpu-client-next` leader updater implementations.
+//! cloneable `solana-tpu-client-next` leader updater implementations. For
+//! node-address-service based trackers, one background service can feed many
+//! updater handles.
 
 use {
     crate::{
@@ -13,13 +15,12 @@ use {
             Error as YellowstoneNodeAddressServiceError, YellowstoneNodeAddressService,
         },
     },
-    async_trait::async_trait,
     log::debug,
     solana_clock::Slot,
     solana_rpc_client::nonblocking::rpc_client::RpcClient,
     solana_tpu_client_next::{
         leader_updater::LeaderUpdater,
-        node_address_service::LeaderTpuCacheServiceConfig,
+        node_address_service::{LeaderTpuCacheServiceConfig, NodeAddressProvider},
         websocket_node_address_service::{
             Error as WebsocketNodeAddressServiceError, WebsocketNodeAddressService,
         },
@@ -57,6 +58,58 @@ pub enum LeaderUpdaterType {
     SlotUpdaterTracker((SocketAddr, LeaderTpuCacheServiceConfig)),
 }
 
+/// Factory that creates per-client leader updater handles.
+///
+/// For websocket, Yellowstone, and custom Geyser trackers, this owns one leader
+/// update service and clones its provider for every scheduler/client. For
+/// pinned leaders no service is needed.
+pub enum LeaderUpdaterFactory {
+    Pinned {
+        address: SocketAddr,
+    },
+    SharedNodeAddress {
+        provider: NodeAddressProvider,
+        service: LeaderUpdateService,
+    },
+}
+
+impl LeaderUpdaterFactory {
+    /// Creates a leader updater handle for one TPU client or scheduler.
+    pub async fn create_updater(&self) -> Result<Box<dyn LeaderUpdaterWithSlot>, Error> {
+        match self {
+            Self::Pinned { address } => Ok(Box::new(PinnedLeaderUpdater {
+                addresses: vec![*address],
+            })),
+            Self::SharedNodeAddress { provider, .. } => Ok(Box::new(provider.clone())),
+        }
+    }
+
+    /// Stops the shared leader update service, if this factory owns one.
+    pub async fn shutdown(self) -> Result<(), Error> {
+        match self {
+            Self::SharedNodeAddress { service, .. } => service.shutdown().await,
+            Self::Pinned { .. } => Ok(()),
+        }
+    }
+}
+
+/// Owns a node-address-service based leader update service.
+pub enum LeaderUpdateService {
+    Websocket(WebsocketNodeAddressService),
+    Yellowstone(YellowstoneNodeAddressService),
+    CustomGeyser(CustomGeyserNodeAddressService),
+}
+
+impl LeaderUpdateService {
+    async fn shutdown(self) -> Result<(), Error> {
+        match self {
+            Self::Websocket(service) => service.shutdown().await.map_err(Error::from),
+            Self::Yellowstone(mut service) => service.shutdown().await.map_err(Error::from),
+            Self::CustomGeyser(mut service) => service.shutdown().await.map_err(Error::from),
+        }
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum Error {
     /// Websocket node-address service failed.
@@ -72,7 +125,7 @@ pub enum Error {
     CustomGeyserNodeAddressServiceError(#[from] CustomGeyserNodeAddressServiceError),
 }
 
-/// Creates a leader updater from CLI selection and node-address-service config.
+/// Creates a leader updater factory from CLI selection and node-address-service config.
 ///
 /// `websocket_url` is used by websocket-backed modes. Pinned and Yellowstone
 /// modes ignore it.
@@ -82,24 +135,25 @@ pub async fn create_leader_updater(
     config: LeaderTpuCacheServiceConfig,
     websocket_url: String,
     cancel: CancellationToken,
-) -> Result<Box<dyn LeaderUpdaterWithSlot>, Error> {
+) -> Result<LeaderUpdaterFactory, Error> {
     match leader_tracker {
         LeaderTracker::PinnedLeaderTracker { address } => {
             debug!("Using pinned leader updater");
-            Ok(Box::new(PinnedLeaderUpdater {
-                address: vec![address],
-            }))
+            Ok(LeaderUpdaterFactory::Pinned { address })
         }
 
         LeaderTracker::WsLeaderTracker => {
             debug!("Using node address service leader tracker updater");
-            let leader_tpu_service =
+            let (provider, service) =
                 WebsocketNodeAddressService::run(rpc_client, websocket_url, config, cancel).await?;
-            Ok(Box::new(leader_tpu_service))
+            Ok(LeaderUpdaterFactory::SharedNodeAddress {
+                provider,
+                service: LeaderUpdateService::Websocket(service),
+            })
         }
         LeaderTracker::YellowstoneLeaderTracker { url, token } => {
             debug!("Using yellowstone leader tracker updater");
-            let leader_tpu_service = YellowstoneNodeAddressService::run(
+            let (provider, service) = YellowstoneNodeAddressService::run(
                 rpc_client,
                 url,
                 token.as_deref(),
@@ -107,48 +161,42 @@ pub async fn create_leader_updater(
                 cancel,
             )
             .await?;
-            Ok(Box::new(leader_tpu_service))
+            Ok(LeaderUpdaterFactory::SharedNodeAddress {
+                provider,
+                service: LeaderUpdateService::Yellowstone(service),
+            })
         }
         LeaderTracker::CustomLeaderTracker { bind_address } => {
             debug!("Using custom geyser node address service leader tracker updater");
-            let leader_tpu_service =
+            let (provider, service) =
                 CustomGeyserNodeAddressService::run(rpc_client, bind_address, config, cancel)
                     .await?;
-            Ok(Box::new(leader_tpu_service))
+            Ok(LeaderUpdaterFactory::SharedNodeAddress {
+                provider,
+                service: LeaderUpdateService::CustomGeyser(service),
+            })
         }
-    }
-}
-
-#[async_trait]
-impl LeaderSlotEstimator for WebsocketNodeAddressService {
-    fn get_current_slot(&mut self) -> Slot {
-        self.current_slot()
     }
 }
 
 struct PinnedLeaderUpdater {
-    address: Vec<SocketAddr>,
+    addresses: Vec<SocketAddr>,
 }
 
-#[async_trait]
 impl LeaderUpdater for PinnedLeaderUpdater {
-    fn next_leaders(&mut self, _lookahead_leaders: usize) -> Vec<SocketAddr> {
-        self.address.clone()
+    fn next_leaders(&mut self, _lookahead_leaders: usize, leaders: &mut Vec<SocketAddr>) {
+        leaders.extend_from_slice(&self.addresses);
     }
-
-    async fn stop(&mut self) {}
 }
 
-#[async_trait]
 impl LeaderSlotEstimator for PinnedLeaderUpdater {
     fn get_current_slot(&mut self) -> Slot {
         0
     }
 }
 
-#[async_trait]
-impl LeaderSlotEstimator for YellowstoneNodeAddressService {
+impl LeaderSlotEstimator for NodeAddressProvider {
     fn get_current_slot(&mut self) -> Slot {
-        self.0.estimated_current_slot()
+        self.estimated_current_slot()
     }
 }
