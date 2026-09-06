@@ -57,16 +57,7 @@ impl YellowstoneNodeAddressService {
         cancel: CancellationToken,
     ) -> Result<(NodeAddressProvider, Self), Error> {
         let stream = init_stream(yellowstone_url.clone(), yellowstone_token).await?;
-        let filtered_stream = stream::unfold(Box::pin(stream), |mut stream| async move {
-            loop {
-                let update = stream.next().await?;
-                match map_yellowstone_update_to_slot_event(update) {
-                    YellowstoneUpdate::SlotEvent(slot_event) => return Some((slot_event, stream)),
-                    YellowstoneUpdate::Skip => continue,
-                    YellowstoneUpdate::End => return None,
-                }
-            }
-        });
+        let filtered_stream = slot_events(stream);
 
         let (provider, service) =
             NodeAddressService::run(rpc_client, filtered_stream, config, cancel).await?;
@@ -79,6 +70,21 @@ impl YellowstoneNodeAddressService {
         self.0.shutdown().await?;
         Ok(())
     }
+}
+
+fn slot_events(
+    updates: impl Stream<Item = Result<SubscribeUpdate, Status>>,
+) -> impl Stream<Item = SlotEvent> {
+    stream::unfold(Box::pin(updates), |mut stream| async move {
+        loop {
+            let update = stream.next().await?;
+            match map_yellowstone_update_to_slot_event(update) {
+                YellowstoneUpdate::SlotEvent(slot_event) => return Some((slot_event, stream)),
+                YellowstoneUpdate::Skip => continue,
+                YellowstoneUpdate::End => return None,
+            }
+        }
+    })
 }
 
 async fn init_stream(
@@ -251,5 +257,38 @@ pub(crate) fn create_client_config(
         x_token: yellowstone_token.map(|token| token.to_string()),
         max_decoding_message_size: 16 * 1024 * 1024,
         timeout: Duration::from_secs(30), // 30 seconds
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn stream_error_terminates_without_polling_again() {
+        let updates = stream::iter([Err(Status::unavailable(String::new()))])
+            .chain(stream::poll_fn(|_| panic!()));
+        let events = slot_events(updates);
+        tokio::pin!(events);
+        assert!(events.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn skipped_update_does_not_end_slot_stream() {
+        let updates = stream::iter([
+            Ok(SubscribeUpdate::default()),
+            Ok(SubscribeUpdate {
+                update_oneof: Some(UpdateOneof::Slot(SubscribeUpdateSlot {
+                    slot: 42,
+                    status: SlotStatus::SlotCreatedBank as i32,
+                    ..SubscribeUpdateSlot::default()
+                })),
+                ..SubscribeUpdate::default()
+            }),
+        ]);
+        let events = slot_events(updates);
+        tokio::pin!(events);
+        assert!(matches!(events.next().await, Some(SlotEvent::Start(42))));
+        assert!(events.next().await.is_none());
     }
 }
