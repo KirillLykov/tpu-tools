@@ -207,7 +207,7 @@ impl TransactionGenerator {
                                 _ = send_batch(wired_tx_batch, transactions_sender) => {}
                                 _ = cancel.cancelled()  => {}
                                 _ = tokio::time::sleep(send_batch_timeout) => {
-                                    warn!(
+                                    info!(
                                         "Timed out sending generated txs to the channel after \
                                          {send_batch_timeout:?}. Probably, something is off with \
                                          connections and client cannot make progress."

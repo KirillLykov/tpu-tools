@@ -92,14 +92,7 @@ pub async fn run_client(
         .simple_transfer_tx_params
         .tx_batch_size
         .get();
-    let generator_channel_size = workers_pull_size
-        .checked_mul(generate_tx_batch_size)
-        .ok_or_else(|| {
-            BenchClientError::InvalidCliArguments(format!(
-                "--workers-pull-size ({workers_pull_size}) * --tx-batch-size \
-                 ({generate_tx_batch_size}) overflows usize"
-            ))
-        })?;
+    let generator_channel_size = workers_pull_size.saturating_mul(generate_tx_batch_size);
     if let Some(target_tps) = target_tps {
         info!("Using {workers_pull_size} generator workers for target {target_tps} tx/s.");
     }
