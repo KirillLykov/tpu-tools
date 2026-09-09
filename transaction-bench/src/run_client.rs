@@ -31,9 +31,6 @@ use {
     tokio_util::sync::CancellationToken,
 };
 
-/// Empirically chosen size of the connection worker channel. Lower/higher values gives
-/// significantly smaller txs blocks on testnet.
-const WORKER_CHANNEL_SIZE: usize = 20;
 /// Number of reconnection attempts, a reasonable value that have been chosen,
 /// doesn't affect TPS.
 const MAX_RECONNECT_ATTEMPTS: usize = 5;
@@ -88,14 +85,24 @@ pub async fn run_client(
         .map(load_identity)
         .collect::<Result<Vec<_>, _>>()?;
 
-    let generate_tx_batch_size = transaction_params
-        .simple_transfer_tx_params
-        .tx_batch_size
-        .get();
+    let num_schedulers = NonZeroUsize::new(endpoint_configs.len()).ok_or_else(|| {
+        BenchClientError::InvalidCliArguments("At least one endpoint is required".to_string())
+    })?;
+    let generate_tx_batch_size = resolve_batch_size(
+        transaction_params.simple_transfer_tx_params.tx_batch_size,
+        target_tps,
+        num_schedulers,
+    );
+    let worker_channel_size = generate_tx_batch_size.saturating_mul(2).max(16);
+
     let generator_channel_size = workers_pull_size.saturating_mul(generate_tx_batch_size);
     if let Some(target_tps) = target_tps {
         info!("Using {workers_pull_size} generator workers for target {target_tps} tx/s.");
     }
+    info!(
+        "Using batch size {generate_tx_batch_size} and worker channel capacity \
+         {worker_channel_size} across {num_schedulers} schedulers."
+    );
 
     {
         let transfer_instructions_per_tx = transaction_params
@@ -209,6 +216,7 @@ pub async fn run_client(
         &leader_updater_factory,
         SchedulerConnectionParams {
             num_max_open_connections,
+            worker_channel_size,
             send_fanout,
             initial_congestion_window,
         },
@@ -264,6 +272,31 @@ pub async fn run_client(
     Ok(())
 }
 
+fn resolve_batch_size(
+    tx_batch_size: Option<NonZeroUsize>,
+    target_tps: Option<u64>,
+    num_schedulers: NonZeroUsize,
+) -> usize {
+    const MIN_BATCH_SIZE: usize = 8;
+    const MAX_BATCH_SIZE: usize = 64;
+    // Heuristic target interval per scheduler used to size batches. Chosen as 2 ms after
+    // observing ~1.12 ms to generate 64 transactions in a local run; not a measured optimum.
+    // Actual generation pacing follows batch size and target TPS, so clamping can change
+    // the interval per scheduler.
+    const TARGET_BATCH_INTERVAL_PER_SCHEDULER_MS: u64 = 2;
+
+    tx_batch_size.map(NonZeroUsize::get).unwrap_or_else(|| {
+        target_tps.map_or(MAX_BATCH_SIZE, |target_tps| {
+            let num_schedulers = u64::try_from(num_schedulers.get()).unwrap();
+            let batches_per_second =
+                (1000 / TARGET_BATCH_INTERVAL_PER_SCHEDULER_MS).saturating_mul(num_schedulers);
+            target_tps
+                .div_ceil(batches_per_second)
+                .clamp(MIN_BATCH_SIZE as u64, MAX_BATCH_SIZE as u64) as usize
+        })
+    })
+}
+
 fn load_identity(endpoint_config: &EndpointConfig) -> Result<Option<Keypair>, BenchClientError> {
     endpoint_config
         .staked_identity_file
@@ -277,6 +310,7 @@ fn load_identity(endpoint_config: &EndpointConfig) -> Result<Option<Keypair>, Be
 
 struct SchedulerConnectionParams {
     num_max_open_connections: usize,
+    worker_channel_size: usize,
     send_fanout: usize,
     initial_congestion_window: Option<u64>,
 }
@@ -311,7 +345,7 @@ async fn build_schedulers(
             stake_identity,
             num_connections: NonZeroUsize::new(scheduler_params.num_max_open_connections)
                 .expect("num-max-open-connections must be non-zero"),
-            worker_channel_size: WORKER_CHANNEL_SIZE,
+            worker_channel_size: scheduler_params.worker_channel_size,
             max_reconnect_attempts: MAX_RECONNECT_ATTEMPTS,
             leaders_fanout: Fanout {
                 send: scheduler_params.send_fanout,
@@ -364,6 +398,57 @@ where
                 task_name: task_name.to_string(),
                 reason: e.to_string(),
             })
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_automatic_batch_size() {
+        for (target_tps, num_schedulers, expected) in [
+            (None, 1, 64),
+            (None, 4, 64),
+            (Some(1), 1, 8),
+            (Some(4_000), 1, 8),
+            (Some(4_001), 1, 9),
+            (Some(5_000), 1, 10),
+            (Some(5_001), 2, 8),
+            (Some(8_000), 2, 8),
+            (Some(8_001), 2, 9),
+            (Some(25_001), 2, 26),
+            (Some(32_000), 1, 64),
+            (Some(32_001), 1, 64),
+            (Some(40_000), 1, 64),
+            (Some(40_000), 2, 40),
+            (Some(64_000), 2, 64),
+            (Some(64_001), 2, 64),
+            (Some(u64::MAX), 1, 64),
+            (Some(40_000), usize::MAX, 8),
+        ] {
+            assert_eq!(
+                resolve_batch_size(None, target_tps, NonZeroUsize::new(num_schedulers).unwrap()),
+                expected,
+                "target TPS: {target_tps:?}, schedulers: {num_schedulers}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_explicit_batch_size_is_not_clamped() {
+        for batch_size in [1, 64, 512] {
+            for target_tps in [None, Some(40_000)] {
+                assert_eq!(
+                    resolve_batch_size(
+                        NonZeroUsize::new(batch_size),
+                        target_tps,
+                        NonZeroUsize::new(2).unwrap(),
+                    ),
+                    batch_size
+                );
+            }
         }
     }
 }

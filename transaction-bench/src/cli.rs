@@ -332,12 +332,14 @@ pub struct SimpleTransferTxParams {
 
     #[clap(
         long,
-        default_value = "64",
         value_parser = value_parser!(NonZeroUsize),
-        help = "Number of transactions per generated batch. This also affects the maximum valid \
-        --num-conflict-groups value: num-send-instructions-per-tx * tx-batch-size."
+        help = "Number of transactions per generated batch. Defaults to \
+                ceil(target-tps / (500 * number of schedulers)), clamped to 8..=64, \
+                or 64 without --target-tps. Worker channel capacity is max(16, 2 * batch size). \
+                This also affects the maximum valid --num-conflict-groups value: \
+                num-send-instructions-per-tx * tx-batch-size."
     )]
-    pub tx_batch_size: NonZeroUsize,
+    pub tx_batch_size: Option<NonZeroUsize>,
 
     #[clap(
         long,
@@ -503,7 +505,7 @@ mod tests {
                         max_lamports_to_transfer: 1000,
                         transfer_tx_cu_budget: 600,
                         num_send_instructions_per_tx: 1,
-                        tx_batch_size: NonZeroUsize::new(64).unwrap(),
+                        tx_batch_size: None,
                         num_conflict_groups: None,
                     },
                     padding_params: InstructionPaddingParams {
@@ -558,7 +560,7 @@ mod tests {
                         max_lamports_to_transfer: DEFAULT_MAX_LAMPORTS_TO_TRANSFER,
                         transfer_tx_cu_budget: 1000,
                         num_send_instructions_per_tx: 2,
-                        tx_batch_size: NonZeroUsize::new(64).unwrap(),
+                        tx_batch_size: None,
                         num_conflict_groups: None,
                     },
                     padding_params: InstructionPaddingParams {
@@ -587,7 +589,7 @@ mod tests {
                 max_lamports_to_transfer: DEFAULT_MAX_LAMPORTS_TO_TRANSFER,
                 transfer_tx_cu_budget: 600,
                 num_send_instructions_per_tx: 1,
-                tx_batch_size: NonZeroUsize::new(64).unwrap(),
+                tx_batch_size: None,
                 num_conflict_groups: None,
             },
             padding_params: InstructionPaddingParams {
@@ -837,6 +839,47 @@ mod tests {
         let actual = cli.unwrap();
 
         assert_eq!(actual, expected_parameters);
+    }
+
+    #[test]
+    fn test_tx_batch_size_override() {
+        for batch_size in ["1", "512"] {
+            let cli = ClientCliParameters::try_parse_from([
+                "test",
+                "-ul",
+                "read-accounts-run",
+                "--accounts-file",
+                "accounts.json",
+                "--tx-batch-size",
+                batch_size,
+                "ws-leader-tracker",
+            ])
+            .unwrap();
+            let Command::ReadAccountsRun {
+                transaction_params, ..
+            } = cli.command
+            else {
+                panic!("Expected read-accounts-run");
+            };
+            assert_eq!(
+                transaction_params.simple_transfer_tx_params.tx_batch_size,
+                Some(batch_size.parse::<NonZeroUsize>().unwrap())
+            );
+        }
+
+        assert!(
+            ClientCliParameters::try_parse_from([
+                "test",
+                "-ul",
+                "read-accounts-run",
+                "--accounts-file",
+                "accounts.json",
+                "--tx-batch-size",
+                "0",
+                "ws-leader-tracker",
+            ])
+            .is_err()
+        );
     }
 
     #[test]
