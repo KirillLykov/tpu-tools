@@ -503,7 +503,7 @@ mod tests {
                         max_lamports_to_transfer: 1000,
                         transfer_tx_cu_budget: 600,
                         num_send_instructions_per_tx: 1,
-                        tx_batch_size: NonZeroUsize::new(64).unwrap(),
+                        tx_batch_size: None,
                         num_conflict_groups: None,
                     },
                     padding_params: InstructionPaddingParams {
@@ -558,7 +558,7 @@ mod tests {
                         max_lamports_to_transfer: DEFAULT_MAX_LAMPORTS_TO_TRANSFER,
                         transfer_tx_cu_budget: 1000,
                         num_send_instructions_per_tx: 2,
-                        tx_batch_size: NonZeroUsize::new(64).unwrap(),
+                        tx_batch_size: None,
                         num_conflict_groups: None,
                     },
                     padding_params: InstructionPaddingParams {
@@ -587,7 +587,7 @@ mod tests {
                 max_lamports_to_transfer: DEFAULT_MAX_LAMPORTS_TO_TRANSFER,
                 transfer_tx_cu_budget: 600,
                 num_send_instructions_per_tx: 1,
-                tx_batch_size: NonZeroUsize::new(64).unwrap(),
+                tx_batch_size: None,
                 num_conflict_groups: None,
             },
             padding_params: InstructionPaddingParams {

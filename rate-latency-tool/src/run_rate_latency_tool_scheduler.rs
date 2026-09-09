@@ -192,8 +192,8 @@ fn select_send_leaders(
     now_ms: u64,
     selected_leaders: &mut Vec<SocketAddr>,
 ) -> bool {
-    let skip_current = leaders.len() > 1
-        && should_skip_current_leader(leader_window_end_ms, rtt_ms, now_ms);
+    let skip_current =
+        leaders.len() > 1 && should_skip_current_leader(leader_window_end_ms, rtt_ms, now_ms);
     let candidates = if skip_current { &leaders[1..] } else { leaders };
     select_unique_leaders(candidates, max_leaders, selected_leaders);
     skip_current
@@ -210,16 +210,88 @@ mod tests {
         let c = SocketAddr::from(([127, 0, 0, 1], 8003));
         // With RTT 21 ms, estimated delivery takes ceil(21 / 2) + 50 = 61 ms.
         for (name, leaders, fanout, end_ms, rtt_ms, expected, skipped) in [
-            ("before cutoff", vec![a, b, c], 2, Some(1062), Some(21), vec![a, b], false),
-            ("at cutoff", vec![a, b, c], 2, Some(1061), Some(21), vec![b, c], true),
-            ("expired without RTT", vec![a, b], 1, Some(999), None, vec![b], true),
-            ("unknown RTT", vec![a, b], 1, Some(1001), None, vec![a], false),
-            ("unknown timing", vec![a, b], 1, None, Some(21), vec![a], false),
+            (
+                "before cutoff",
+                vec![a, b, c],
+                2,
+                Some(1062),
+                Some(21),
+                vec![a, b],
+                false,
+            ),
+            (
+                "at cutoff",
+                vec![a, b, c],
+                2,
+                Some(1061),
+                Some(21),
+                vec![b, c],
+                true,
+            ),
+            (
+                "expired without RTT",
+                vec![a, b],
+                1,
+                Some(999),
+                None,
+                vec![b],
+                true,
+            ),
+            (
+                "unknown RTT",
+                vec![a, b],
+                1,
+                Some(1001),
+                None,
+                vec![a],
+                false,
+            ),
+            (
+                "unknown timing",
+                vec![a, b],
+                1,
+                None,
+                Some(21),
+                vec![a],
+                false,
+            ),
             ("pinned", vec![a], 1, None, None, vec![a], false),
-            ("no alternative", vec![a], 1, Some(999), Some(21), vec![a], false),
-            ("no candidates", vec![], 1, Some(999), Some(21), vec![], false),
-            ("repeated leader windows", vec![a, a, b], 2, Some(1061), Some(21), vec![a, b], true),
-            ("deduplicate within fanout", vec![a, a, b], 2, None, None, vec![a], false),
+            (
+                "no alternative",
+                vec![a],
+                1,
+                Some(999),
+                Some(21),
+                vec![a],
+                false,
+            ),
+            (
+                "no candidates",
+                vec![],
+                1,
+                Some(999),
+                Some(21),
+                vec![],
+                false,
+            ),
+            (
+                "repeated leader windows",
+                vec![a, a, b],
+                2,
+                Some(1061),
+                Some(21),
+                vec![a, b],
+                true,
+            ),
+            (
+                "deduplicate within fanout",
+                vec![a, a, b],
+                2,
+                None,
+                None,
+                vec![a],
+                false,
+            ),
             ("zero fanout", vec![a, b], 0, None, None, vec![], false),
         ] {
             let mut selected = vec![c];
