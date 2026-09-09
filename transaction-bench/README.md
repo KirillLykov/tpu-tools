@@ -118,9 +118,15 @@ solana-transaction-bench "${args[@]}"
 #### Target TPS
 
 Use `--target-tps` to pace transaction generation instead of sending as fast as
-the generator and connection workers allow. Transaction batches are a generator
-concern only; `--tx-batch-size` controls how many transactions are produced per
-generated batch and defaults to 64.
+the generator and connection workers allow. When `--tx-batch-size` is omitted,
+the generated batch size is `ceil(target_tps / (100 * num_schedulers))`, clamped
+to 8–64 transactions. Each configured endpoint runs one scheduler. Without
+`--target-tps`, the batch size defaults to 64. An explicit `--tx-batch-size`
+overrides this calculation and is not clamped.
+
+Each connection worker's channel capacity is `max(16, 2 * batch_size)`.
+For example, 40,000 TPS with one scheduler uses batches of 64 transactions
+and a worker channel capacity of 128. The resolved sizes are logged at startup.
 
 ```shell
 args=(
